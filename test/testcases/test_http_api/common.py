@@ -247,3 +247,41 @@ def batch_add_sessions_with_chat_assistant(auth, chat_assistant_id, num):
         res = create_session_with_chat_assistant(auth, chat_assistant_id, {"name": f"session_with_chat_assistant_{i}"})
         session_ids.append(res["data"]["id"])
     return session_ids
+
+
+# USER MANAGEMENT
+USER_API_URL = f"/{VERSION}/user"
+
+
+def create_user(auth, payload=None, *, headers=HEADERS):
+    url = f"{HOST_ADDRESS}{USER_API_URL}/create"
+    res = requests.post(url=url, headers=headers, auth=auth, json=payload)
+    return res.json()
+
+
+def update_user(auth, payload=None, *, headers=HEADERS):
+    url = f"{HOST_ADDRESS}{USER_API_URL}/update"
+    res = requests.put(url=url, headers=headers, auth=auth, json=payload)
+    return res.json()
+
+
+def list_users(auth, params=None, *, headers=HEADERS):
+    url = f"{HOST_ADDRESS}{USER_API_URL}/list"
+    res = requests.get(url=url, headers=headers, auth=auth, params=params)
+    return res.json()
+
+
+def delete_user(auth, payload=None, *, headers=HEADERS):
+    url = f"{HOST_ADDRESS}{USER_API_URL}/delete"
+    res = requests.delete(url=url, headers=headers, auth=auth, json=payload)
+    return res.json()
+
+
+# TEAM MANAGEMENT
+TEAM_API_URL = f"/{VERSION}/tenant"
+
+
+def create_team(auth, payload=None, *, headers=HEADERS):
+    url = f"{HOST_ADDRESS}{TEAM_API_URL}/create"
+    res = requests.post(url=url, headers=headers, auth=auth, json=payload)
+    return res.json()
