@@ -14,11 +14,22 @@
 #  limitations under the License.
 #
 from pathlib import Path
+from typing import Any, Dict, Optional, Union
 
 import requests
 from configs import HOST_ADDRESS, VERSION
+from requests.auth import AuthBase
 from requests_toolbelt import MultipartEncoder
 from utils.file_utils import create_txt_file
+
+# Import login_as_user and encrypt_password from root conftest
+import importlib.util
+_root_conftest_path = Path(__file__).parent.parent / "conftest.py"
+_root_spec = importlib.util.spec_from_file_location("root_conftest", _root_conftest_path)
+_root_conftest_module = importlib.util.module_from_spec(_root_spec)
+_root_spec.loader.exec_module(_root_conftest_module)
+login_as_user = _root_conftest_module.login_as_user
+encrypt_password = _root_conftest_module.encrypt_password
 
 HEADERS = {"Content-Type": "application/json"}
 DATASETS_API_URL = f"/api/{VERSION}/datasets"
@@ -247,3 +258,667 @@ def batch_add_sessions_with_chat_assistant(auth, chat_assistant_id, num):
         res = create_session_with_chat_assistant(auth, chat_assistant_id, {"name": f"session_with_chat_assistant_{i}"})
         session_ids.append(res["data"]["id"])
     return session_ids
+
+
+# USER MANAGEMENT
+USER_API_URL: str = f"/{VERSION}/user"
+
+
+def create_user(
+    auth: Union[AuthBase, str, None],
+    payload: Optional[Dict[str, Any]] = None,
+    *,
+    headers: Dict[str, str] = HEADERS,
+) -> Dict[str, Any]:
+    """Create a new user.
+
+    Args:
+        auth: Authentication object (AuthBase subclass), token string, or None.
+        payload: Optional JSON payload containing user data.
+        headers: Optional HTTP headers. Defaults to HEADERS.
+
+    Returns:
+        JSON response as a dictionary containing the created user data.
+
+    Raises:
+        requests.RequestException: If the HTTP request fails.
+    """
+    url: str = f"{HOST_ADDRESS}{USER_API_URL}/create"
+    res: requests.Response = requests.post(
+        url=url, headers=headers, auth=auth, json=payload
+    )
+    return res.json()
+
+
+def update_user(
+    auth: Union[AuthBase, str, None],
+    payload: Optional[Dict[str, Any]] = None,
+    *,
+    headers: Dict[str, str] = HEADERS,
+) -> Dict[str, Any]:
+    """Update an existing user.
+
+    Args:
+        auth: Authentication object (AuthBase subclass), token string, or None.
+        payload: Optional JSON payload containing updated user data.
+        headers: Optional HTTP headers. Defaults to HEADERS.
+
+    Returns:
+        JSON response as a dictionary containing the updated user data.
+
+    Raises:
+        requests.RequestException: If the HTTP request fails.
+    """
+    url: str = f"{HOST_ADDRESS}{USER_API_URL}/update"
+    res: requests.Response = requests.put(
+        url=url, headers=headers, auth=auth, json=payload
+    )
+    return res.json()
+
+
+def list_users(
+    auth: Union[AuthBase, str, None],
+    params: Optional[Dict[str, Any]] = None,
+    *,
+    headers: Dict[str, str] = HEADERS,
+) -> Dict[str, Any]:
+    """List users with optional filtering.
+
+    Args:
+        auth: Authentication object (AuthBase subclass), token string, or None.
+        params: Optional query parameters for filtering/pagination.
+        headers: Optional HTTP headers. Defaults to HEADERS.
+
+    Returns:
+        JSON response as a dictionary containing the list of users.
+
+    Raises:
+        requests.RequestException: If the HTTP request fails.
+    """
+    url: str = f"{HOST_ADDRESS}{USER_API_URL}/list"
+    res: requests.Response = requests.get(
+        url=url, headers=headers, auth=auth, params=params
+    )
+    return res.json()
+
+
+def delete_user(
+    auth: Union[AuthBase, str, None],
+    payload: Optional[Dict[str, Any]] = None,
+    *,
+    headers: Dict[str, str] = HEADERS,
+) -> Dict[str, Any]:
+    """Delete a user.
+
+    Args:
+        auth: Authentication object (AuthBase subclass), token string, or None.
+        payload: Optional JSON payload containing user identification data.
+        headers: Optional HTTP headers. Defaults to HEADERS.
+
+    Returns:
+        JSON response as a dictionary containing the deletion result.
+
+    Raises:
+        requests.RequestException: If the HTTP request fails.
+    """
+    url: str = f"{HOST_ADDRESS}{USER_API_URL}/delete"
+    res: requests.Response = requests.delete(
+        url=url, headers=headers, auth=auth, json=payload
+    )
+    return res.json()
+
+
+def get_user_info(
+    auth: Union[AuthBase, str, None],
+    *,
+    headers: Dict[str, str] = HEADERS,
+) -> Dict[str, Any]:
+    """Get the current authenticated user's information.
+
+    Args:
+        auth: Authentication object (AuthBase subclass), token string, or None.
+        headers: Optional HTTP headers. Defaults to HEADERS.
+
+    Returns:
+        JSON response as a dictionary containing the user information.
+
+    Raises:
+        requests.RequestException: If the HTTP request fails.
+    """
+    url: str = f"{HOST_ADDRESS}{USER_API_URL}/info"
+    res: requests.Response = requests.get(
+        url=url, headers=headers, auth=auth
+    )
+    return res.json()
+
+
+# TEAM MANAGEMENT
+TEAM_API_URL: str = f"/{VERSION}/tenant"
+
+
+def create_team(
+    auth: Union[AuthBase, str, None],
+    payload: Optional[Dict[str, Any]] = None,
+    *,
+    headers: Dict[str, str] = HEADERS,
+) -> Dict[str, Any]:
+    """Create a new team (tenant).
+
+    Args:
+        auth: Authentication object (AuthBase subclass), token string, or None.
+        payload: Optional JSON payload containing team data (e.g., name, user_id).
+        headers: Optional HTTP headers. Defaults to HEADERS.
+
+    Returns:
+        JSON response as a dictionary containing the created team data.
+
+    Raises:
+        requests.RequestException: If the HTTP request fails.
+    """
+    url: str = f"{HOST_ADDRESS}{TEAM_API_URL}/create"
+    res: requests.Response = requests.post(
+        url=url, headers=headers, auth=auth, json=payload
+    )
+    return res.json()
+
+
+def add_users_to_team(
+    auth: Union[AuthBase, str, None],
+    tenant_id: str,
+    payload: Optional[Dict[str, Any]] = None,
+    *,
+    headers: Dict[str, str] = HEADERS,
+) -> Dict[str, Any]:
+    """Add users to a team (tenant).
+
+    Args:
+        auth: Authentication object (AuthBase subclass), token string, or None.
+        tenant_id: The tenant/team ID to add users to.
+        payload: Optional JSON payload containing users list (emails).
+        headers: Optional HTTP headers. Defaults to HEADERS.
+
+    Returns:
+        JSON response as a dictionary containing added and failed user lists.
+
+    Raises:
+        requests.RequestException: If the HTTP request fails.
+    """
+    url: str = f"{HOST_ADDRESS}{TEAM_API_URL}/{tenant_id}/users/add"
+    res: requests.Response = requests.post(
+        url=url, headers=headers, auth=auth, json=payload
+    )
+    return res.json()
+
+
+def remove_user_from_team(
+    auth: Union[AuthBase, str, None],
+    tenant_id: str,
+    payload: Optional[Dict[str, Any]] = None,
+    *,
+    headers: Dict[str, str] = HEADERS,
+) -> Dict[str, Any]:
+    """Remove a user from a team (tenant).
+
+    Args:
+        auth: Authentication object (AuthBase subclass), token string, or None.
+        tenant_id: The tenant/team ID to remove user from.
+        payload: Optional JSON payload containing user_id string.
+        headers: Optional HTTP headers. Defaults to HEADERS.
+
+    Returns:
+        JSON response as a dictionary containing removal results.
+
+    Raises:
+        requests.RequestException: If the HTTP request fails.
+    """
+    url: str = f"{HOST_ADDRESS}{TEAM_API_URL}/{tenant_id}/user/remove"
+    res: requests.Response = requests.post(
+        url=url, headers=headers, auth=auth, json=payload
+    )
+    return res.json()
+
+
+def accept_team_invitation(
+    auth: Union[AuthBase, str, None],
+    tenant_id: str,
+    role: Optional[str] = None,
+    *,
+    headers: Dict[str, str] = HEADERS,
+) -> Dict[str, Any]:
+    """Accept a team invitation.
+
+    Args:
+        auth: Authentication object (AuthBase subclass), token string, or None.
+        tenant_id: The tenant/team ID to accept invitation for.
+        role: Optional role to assign after acceptance (normal, admin). Defaults to normal.
+        headers: Optional HTTP headers. Defaults to HEADERS.
+
+    Returns:
+        JSON response as a dictionary containing the acceptance result.
+
+    Raises:
+        requests.RequestException: If the HTTP request fails.
+    """
+    url: str = f"{HOST_ADDRESS}{TEAM_API_URL}/update-request/{tenant_id}"
+    payload: Dict[str, Any] = {"accept": True}
+    if role:
+        payload["role"] = role
+    res: requests.Response = requests.put(
+        url=url, headers=headers, auth=auth, json=payload
+    )
+    return res.json()
+
+
+def reject_team_invitation(
+    auth: Union[AuthBase, str, None],
+    tenant_id: str,
+    *,
+    headers: Dict[str, str] = HEADERS,
+) -> Dict[str, Any]:
+    """Reject a team invitation.
+
+    Args:
+        auth: Authentication object (AuthBase subclass), token string, or None.
+        tenant_id: The tenant/team ID to reject invitation for.
+        headers: Optional HTTP headers. Defaults to HEADERS.
+
+    Returns:
+        JSON response as a dictionary containing the rejection result.
+
+    Raises:
+        requests.RequestException: If the HTTP request fails.
+    """
+    url: str = f"{HOST_ADDRESS}{TEAM_API_URL}/update-request/{tenant_id}"
+    payload: Dict[str, bool] = {"accept": False}
+    res: requests.Response = requests.put(
+        url=url, headers=headers, auth=auth, json=payload
+    )
+    return res.json()
+
+
+def update_team(
+    auth: Union[AuthBase, str, None],
+    tenant_id: str,
+    payload: Optional[Dict[str, Any]] = None,
+    *,
+    headers: Dict[str, str] = HEADERS,
+) -> Dict[str, Any]:
+    """Update a team (tenant).
+
+    Args:
+        auth: Authentication object (AuthBase subclass), token string, or None.
+        tenant_id: The team ID to update.
+        payload: Optional JSON payload containing update data (e.g., name, llm_id, embd_id, credit).
+        headers: Optional HTTP headers. Defaults to HEADERS.
+
+    Returns:
+        JSON response as a dictionary containing the updated team data.
+
+    Raises:
+        requests.RequestException: If the HTTP request fails.
+    """
+    url: str = f"{HOST_ADDRESS}{TEAM_API_URL}/{tenant_id}"
+    res: requests.Response = requests.put(
+        url=url, headers=headers, auth=auth, json=payload
+    )
+    return res.json()
+
+
+def promote_admin(
+    auth: Union[AuthBase, str, None],
+    tenant_id: str,
+    user_id: str,
+    *,
+    headers: Dict[str, str] = HEADERS,
+) -> Dict[str, Any]:
+    """Promote a user to admin in a team.
+
+    Args:
+        auth: Authentication object (AuthBase subclass), token string, or None.
+        tenant_id: The team ID.
+        user_id: The user ID to promote to admin.
+        headers: Optional HTTP headers. Defaults to HEADERS.
+
+    Returns:
+        JSON response as a dictionary containing the promotion result.
+
+    Raises:
+        requests.RequestException: If the HTTP request fails.
+    """
+    url: str = f"{HOST_ADDRESS}{TEAM_API_URL}/{tenant_id}/admin/{user_id}/promote"
+    res: requests.Response = requests.post(
+        url=url, headers=headers, auth=auth
+    )
+    return res.json()
+
+
+def demote_admin(
+    auth: Union[AuthBase, str, None],
+    tenant_id: str,
+    user_id: str,
+    *,
+    headers: Dict[str, str] = HEADERS,
+) -> Dict[str, Any]:
+    """Demote an admin to normal member in a team.
+
+    Args:
+        auth: Authentication object (AuthBase subclass), token string, or None.
+        tenant_id: The team ID.
+        user_id: The user ID to demote from admin.
+        headers: Optional HTTP headers. Defaults to HEADERS.
+
+    Returns:
+        JSON response as a dictionary containing the demotion result.
+
+    Raises:
+        requests.RequestException: If the HTTP request fails.
+    """
+    url: str = f"{HOST_ADDRESS}{TEAM_API_URL}/{tenant_id}/admin/{user_id}/demote"
+    res: requests.Response = requests.post(
+        url=url, headers=headers, auth=auth
+    )
+    return res.json()
+
+
+# DEPARTMENT MANAGEMENT
+DEPARTMENT_API_URL: str = f"/{VERSION}/department"
+GROUP_API_URL: str = f"/{VERSION}/group"
+
+
+def create_department(
+    auth: Union[AuthBase, str, None],
+    payload: Optional[Dict[str, Any]] = None,
+    *,
+    headers: Dict[str, str] = HEADERS,
+) -> Dict[str, Any]:
+    """Create a new department.
+
+    Args:
+        auth: Authentication object (AuthBase subclass), token string, or None.
+        payload: Optional JSON payload containing department data (e.g., name, tenant_id, description).
+        headers: Optional HTTP headers. Defaults to HEADERS.
+
+    Returns:
+        JSON response as a dictionary containing the created department data.
+
+    Raises:
+        requests.RequestException: If the HTTP request fails.
+    """
+    url: str = f"{HOST_ADDRESS}{DEPARTMENT_API_URL}/create"
+    res: requests.Response = requests.post(
+        url=url, headers=headers, auth=auth, json=payload
+    )
+    return res.json()
+
+
+def add_department_members(
+    auth: Union[AuthBase, str, None],
+    department_id: str,
+    payload: Optional[Dict[str, Any]] = None,
+    *,
+    headers: Dict[str, str] = HEADERS,
+) -> Dict[str, Any]:
+    """Add members to a department.
+
+    Args:
+        auth: Authentication object (AuthBase subclass), token string, or None.
+        department_id: The department ID to add members to.
+        payload: Optional JSON payload containing user_ids list.
+        headers: Optional HTTP headers. Defaults to HEADERS.
+
+    Returns:
+        JSON response as a dictionary containing added and failed user lists.
+
+    Raises:
+        requests.RequestException: If the HTTP request fails.
+    """
+    url: str = f"{HOST_ADDRESS}{DEPARTMENT_API_URL}/{department_id}/members/add"
+    res: requests.Response = requests.post(
+        url=url, headers=headers, auth=auth, json=payload
+    )
+    return res.json()
+
+
+def remove_department_member(
+    auth: Union[AuthBase, str, None],
+    department_id: str,
+    user_id: str,
+    *,
+    headers: Dict[str, str] = HEADERS,
+) -> Dict[str, Any]:
+    """Remove a member from a department.
+
+    Args:
+        auth: Authentication object (AuthBase subclass), token string, or None.
+        department_id: The department ID to remove member from.
+        user_id: The user ID to remove from the department.
+        headers: Optional HTTP headers. Defaults to HEADERS.
+
+    Returns:
+        JSON response as a dictionary containing the removal result.
+
+    Raises:
+        requests.RequestException: If the HTTP request fails.
+    """
+    url: str = f"{HOST_ADDRESS}{DEPARTMENT_API_URL}/{department_id}/members/{user_id}"
+    res: requests.Response = requests.delete(
+        url=url, headers=headers, auth=auth
+    )
+    return res.json()
+
+
+def update_department(
+    auth: Union[AuthBase, str, None],
+    department_id: str,
+    payload: Optional[Dict[str, Any]] = None,
+    *,
+    headers: Dict[str, str] = HEADERS,
+) -> Dict[str, Any]:
+    """Update a department's details.
+
+    Args:
+        auth: Authentication object (AuthBase subclass), token string, or None.
+        department_id: The department ID to update.
+        payload: Optional JSON payload containing update data (e.g., name, description).
+        headers: Optional HTTP headers. Defaults to HEADERS.
+
+    Returns:
+        JSON response as a dictionary containing the updated department data.
+
+    Raises:
+        requests.RequestException: If the HTTP request fails.
+    """
+    url: str = f"{HOST_ADDRESS}{DEPARTMENT_API_URL}/{department_id}"
+    res: requests.Response = requests.put(
+        url=url, headers=headers, auth=auth, json=payload
+    )
+    return res.json()
+
+
+def delete_department(
+    auth: Union[AuthBase, str, None],
+    department_id: str,
+    *,
+    headers: Dict[str, str] = HEADERS,
+) -> Dict[str, Any]:
+    """Delete a department.
+
+    Args:
+        auth: Authentication object (AuthBase subclass), token string, or None.
+        department_id: The department ID to delete.
+        headers: Optional HTTP headers. Defaults to HEADERS.
+
+    Returns:
+        JSON response as a dictionary containing the deletion result.
+
+    Raises:
+        requests.RequestException: If the HTTP request fails.
+    """
+    url: str = f"{HOST_ADDRESS}{DEPARTMENT_API_URL}/{department_id}"
+    res: requests.Response = requests.delete(
+        url=url, headers=headers, auth=auth
+    )
+    return res.json()
+
+
+def list_department_members(
+    auth: Union[AuthBase, str, None],
+    department_id: str,
+    *,
+    headers: Dict[str, str] = HEADERS,
+) -> Dict[str, Any]:
+    """List all members in a department.
+
+    Args:
+        auth: Authentication object (AuthBase subclass), token string, or None.
+        department_id: The department ID to list members from.
+        headers: Optional HTTP headers. Defaults to HEADERS.
+
+    Returns:
+        JSON response as a dictionary containing the list of department members.
+
+    Raises:
+        requests.RequestException: If the HTTP request fails.
+    """
+    url: str = f"{HOST_ADDRESS}{DEPARTMENT_API_URL}/{department_id}/members"
+    res: requests.Response = requests.get(
+        url=url, headers=headers, auth=auth
+    )
+    return res.json()
+
+
+# GROUP MANAGEMENT
+def create_group(
+    auth: Union[AuthBase, str, None],
+    payload: Optional[Dict[str, Any]] = None,
+    *,
+    headers: Dict[str, str] = HEADERS,
+) -> Dict[str, Any]:
+    """Create a new group.
+
+    Args:
+        auth: Authentication object (AuthBase subclass), token string, or None.
+        payload: Optional JSON payload containing group data (e.g., name, tenant_id, description).
+        headers: Optional HTTP headers. Defaults to HEADERS.
+
+    Returns:
+        JSON response as a dictionary containing the created group data.
+
+    Raises:
+        requests.RequestException: If the HTTP request fails.
+    """
+    url: str = f"{HOST_ADDRESS}{GROUP_API_URL}/create"
+    res: requests.Response = requests.post(
+        url=url, headers=headers, auth=auth, json=payload
+    )
+    return res.json()
+
+
+def add_group_members(
+    auth: Union[AuthBase, str, None],
+    group_id: str,
+    payload: Optional[Dict[str, Any]] = None,
+    *,
+    headers: Dict[str, str] = HEADERS,
+) -> Dict[str, Any]:
+    """Add members to a group.
+
+    Args:
+        auth: Authentication object (AuthBase subclass), token string, or None.
+        group_id: The group ID to add members to.
+        payload: Optional JSON payload containing user_ids list.
+        headers: Optional HTTP headers. Defaults to HEADERS.
+
+    Returns:
+        JSON response as a dictionary containing added and failed user lists.
+
+    Raises:
+        requests.RequestException: If the HTTP request fails.
+    """
+    url: str = f"{HOST_ADDRESS}{GROUP_API_URL}/{group_id}/members/add"
+    res: requests.Response = requests.post(
+        url=url, headers=headers, auth=auth, json=payload
+    )
+    return res.json()
+
+
+def remove_group_member(
+    auth: Union[AuthBase, str, None],
+    group_id: str,
+    user_id: str,
+    *,
+    headers: Dict[str, str] = HEADERS,
+) -> Dict[str, Any]:
+    """Remove a user from a group.
+
+    Args:
+        auth: Authentication object (AuthBase subclass), token string, or None.
+        group_id: The group ID to remove member from.
+        user_id: The user ID to remove from the group.
+        headers: Optional HTTP headers. Defaults to HEADERS.
+
+    Returns:
+        JSON response as a dictionary containing the removal result.
+
+    Raises:
+        requests.RequestException: If the HTTP request fails.
+    """
+    url: str = f"{HOST_ADDRESS}{GROUP_API_URL}/{group_id}/members/{user_id}"
+    res: requests.Response = requests.delete(
+        url=url, headers=headers, auth=auth
+    )
+    return res.json()
+
+
+def list_group_members(
+    auth: Union[AuthBase, str, None],
+    group_id: str,
+    params: Optional[Dict[str, Any]] = None,
+    *,
+    headers: Dict[str, str] = HEADERS,
+) -> Dict[str, Any]:
+    """List all members of a group.
+
+    Args:
+        auth: Authentication object (AuthBase subclass), token string, or None.
+        group_id: The group ID to list members for.
+        params: Optional query parameters for filtering/pagination.
+        headers: Optional HTTP headers. Defaults to HEADERS.
+
+    Returns:
+        JSON response as a dictionary containing the list of members.
+
+    Raises:
+        requests.RequestException: If the HTTP request fails.
+    """
+    url: str = f"{HOST_ADDRESS}{GROUP_API_URL}/{group_id}/members"
+    res: requests.Response = requests.get(
+        url=url, headers=headers, auth=auth, params=params
+    )
+    return res.json()
+
+
+def delete_group(
+    auth: Union[AuthBase, str, None],
+    group_id: str,
+    *,
+    headers: Dict[str, str] = HEADERS,
+) -> Dict[str, Any]:
+    """Delete a group.
+
+    Args:
+        auth: Authentication object (AuthBase subclass), token string, or None.
+        group_id: The group ID to delete.
+        headers: Optional HTTP headers. Defaults to HEADERS.
+
+    Returns:
+        JSON response as a dictionary containing the deletion result.
+
+    Raises:
+        requests.RequestException: If the HTTP request fails.
+    """
+    url: str = f"{HOST_ADDRESS}{GROUP_API_URL}/{group_id}"
+    res: requests.Response = requests.delete(
+        url=url, headers=headers, auth=auth
+    )
+    return res.json()
