@@ -15,18 +15,21 @@
 #
 import logging
 import re
+
 from werkzeug.security import check_password_hash
 from common.constants import ActiveEnum
 from api.db.services import UserService
 from api.db.joint_services.user_account_service import create_new_user, delete_user_data
 from api.db.services.canvas_service import UserCanvasService
-from api.db.services.user_service import TenantService
+from api.db.services.user_service import TenantService, UserTenantService
 from api.db.services.knowledgebase_service import KnowledgebaseService
+from api.db.services.api_service import APITokenService
 from api.utils.crypt import decrypt
 from api.utils import health_utils
 
 from api.common.exceptions import AdminException, UserAlreadyExistsError, UserNotFoundError
 from config import SERVICE_CONFIGS
+from typing import Any
 
 
 class UserMgr:
@@ -135,6 +138,45 @@ class UserMgr:
         UserService.update_user(usr.id, {"is_active": target_status})
         return f"Turn {_activate_status} user activate status successfully!"
 
+    @staticmethod
+    def get_user_api_key(username: str) -> list[dict[str, Any]]:
+        # use email to find user. check exist and unique.
+        user_list: list[Any] = UserService.query_user_by_email(username)
+        if not user_list:
+            raise UserNotFoundError(username)
+        elif len(user_list) > 1:
+            raise AdminException(f"Exist more than 1 user: {username}!")
+        
+        usr: Any = user_list[0]
+        # tenant_id is typically the same as user_id for the owner tenant
+        tenant_id: str = usr.id
+        
+        # Query all API tokens for this tenant
+        api_tokens: Any = APITokenService.query(tenant_id=tenant_id)
+        
+        result: list[dict[str, Any]] = []
+        for token_obj in api_tokens:
+            result.append({
+                "token": token_obj.token,
+                "beta": token_obj.beta,
+                "tenant_id": token_obj.tenant_id,
+                "dialog_id": token_obj.dialog_id,
+                "source": token_obj.source,
+                "create_date": token_obj.create_date,
+                "update_date": token_obj.update_date
+            })
+        
+        return result
+
+    @staticmethod
+    def generate_confirmation_token() -> str:
+        import secrets
+        return "ragflow-" + secrets.token_urlsafe(32)
+
+    @staticmethod
+    def save_api_token(api_token: dict[str, Any]) -> bool:
+        return APITokenService.save(**api_token)
+
 
 class UserServiceMgr:
 
@@ -173,6 +215,16 @@ class UserServiceMgr:
             'canvas_category': r['canvas_category'].split('_')[0],
             'avatar': r['avatar']
         } for r in res]
+
+    @staticmethod
+    def get_user_tenant(email: str) -> list[dict[str, Any]]:
+        users: list[Any] = UserService.query_user_by_email(email)
+        if not users and len(users) != 1:
+            raise UserNotFoundError(email)
+        user: Any = users[0]
+        
+        tenants: list[dict[str, Any]] = UserTenantService.get_tenants_by_user_id(user.id)
+        return tenants
 
 
 class ServiceMgr:
