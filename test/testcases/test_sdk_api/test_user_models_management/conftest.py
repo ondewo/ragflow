@@ -24,6 +24,16 @@ def get_default_models(client: RAGFlow) -> Dict[str, Any]:
     return res_json.get("data")
 
 
+def list_user_models(client: RAGFlow, include_details: bool = False) -> Dict[str, Any]:
+    """Helper function to list user models via API"""
+    params: Dict[str, str] = {"include_details": "true"} if include_details else {}
+    res: requests.Response = client.get("/models", params=params)
+    res_json: Dict[str, Any] = res.json()
+    if res_json.get("code") != 0:
+        raise Exception(res_json.get("message"))
+    return res_json.get("data")
+
+
 @pytest.fixture(scope="class", autouse=True)
 def restore_default_models(request: FixtureRequest, client: RAGFlow) -> Dict[str, Any]:
     """Fixture to save and restore default models before/after test class"""
