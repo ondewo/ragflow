@@ -1,4 +1,4 @@
-from typing import Any, Dict
+from typing import Any, Dict, List
 
 import pytest
 import requests
@@ -34,26 +34,37 @@ def list_user_models(client: RAGFlow, include_details: bool = False) -> Dict[str
     return res_json.get("data")
 
 
-@pytest.fixture(scope="class", autouse=True)
-def restore_default_models(request: FixtureRequest, client: RAGFlow) -> Dict[str, Any]:
-    """Fixture to save and restore default models before/after test class"""
-    # Save initial state before tests
-    initial_models: Dict[str, Any] = get_default_models(client)
+def add_model(client: RAGFlow, **kwargs: Any) -> Any:
+    """Helper function to add models via API"""
+    res: requests.Response = client.post("/models", kwargs)
+    res_json: Dict[str, Any] = res.json()
+    if res_json.get("code") != 0:
+        raise Exception(res_json.get("message"))
+    return res_json.get("data")
+
+
+def remove_model(client: RAGFlow, **kwargs: Any) -> Any:
+    """Helper function to remove models via API"""
+    res: requests.Response = client.delete("/models", kwargs)
+    res_json: Dict[str, Any] = res.json()
+    if res_json.get("code") != 0:
+        raise Exception(res_json.get("message"))
+    return res_json.get("data")
+
+
+@pytest.fixture(scope="class")
+def cleanup_added_models(request: FixtureRequest, client: RAGFlow) -> None:
+    """Fixture to clean up models added during tests (for TestAddModel class)"""
+    # Track factories that might be added during tests
+    factories_to_cleanup: List[str] = ["Builtin", "LocalAI", "Ollama", "Xinference", "LM-Studio", "GPUStack", "FastEmbed"]
     
     def cleanup() -> None:
-        # Restore initial state after all tests in the class
-        try:
-            # Only restore non-empty values to avoid "at least one model ID" error
-            restore_payload: Dict[str, str] = {}
-            for key, value in initial_models.items():
-                if value:  # Only include non-empty values
-                    restore_payload[key] = value
-            
-            if restore_payload:
-                set_default_models(client, **restore_payload)
-        except Exception:
-            # Ignore errors during cleanup
-            pass
+        # Remove test factories that were added during tests
+        for factory in factories_to_cleanup:
+            try:
+                remove_model(client, llm_factory=factory)
+            except Exception:
+                # Ignore errors during cleanup (factory might not exist)
+                pass
     
     request.addfinalizer(cleanup)
-    return initial_models
