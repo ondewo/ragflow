@@ -410,7 +410,7 @@ def generate_user_api_key(user_name: str) -> tuple[Response, int]:
 @admin_bp.route('/users/<username>/api_key', methods=['GET'])
 @login_required
 @check_admin_auth
-def get_user_api_key(username: str) -> tuple[Response, int]:
+def get_user_api_keys(username: str) -> tuple[Response, int]:
     try:
         api_keys: list[dict[str, Any]] = UserMgr.get_user_api_key(username)
         return success_response(api_keys, "Get user API keys")

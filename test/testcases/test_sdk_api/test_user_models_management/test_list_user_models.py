@@ -86,9 +86,7 @@ class TestListUserModels:
     def test_list_user_models_model_types(self, client: RAGFlow) -> None:
         """Test that list_user_models returns models with valid types"""
         models: Dict[str, Any] = list_user_models(client)
-        
-        valid_types: List[str] = ["chat", "embedding", "rerank", "speech2text", "image2text", "tts"]
-        
+                
         for factory_name, factory_data in models.items():
             llm_list: List[Dict[str, Any]] = factory_data["llm"]
             for model in llm_list:
@@ -178,7 +176,7 @@ class TestListUserModels:
         models: Dict[str, Any] = list_user_models(client)
         
         for factory_name, factory_data in models.items():
-            tags: Any = factory_data.get("tags")
+            factory_data.get("tags")
             # tags may be None, dict, or other types depending on factory
             # Just verify the key exists
             assert "tags" in factory_data
