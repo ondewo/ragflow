@@ -28,10 +28,10 @@ class TestGenerateUserApiKey:
         """Test successfully generating API key for a user"""
         # Use the test user email (get_user_details expects email)
         user_name: str = EMAIL
-        
+
         # Generate API key
         result: Dict[str, Any] = generate_user_api_key(admin_session, user_name)
-        
+
         # Verify response structure
         assert result is not None, "API key generation should return data"
         assert "tenant_id" in result, "Response should contain tenant_id"
@@ -39,29 +39,33 @@ class TestGenerateUserApiKey:
         assert "beta" in result, "Response should contain beta"
         assert "create_time" in result, "Response should contain create_time"
         assert "create_date" in result, "Response should contain create_date"
-        
+
         # Verify token format (should start with "ragflow-")
         token: str = result["token"]
         assert isinstance(token, str), "Token should be a string"
         assert len(token) > 0, "Token should not be empty"
-        
-        # Verify beta is derived from token
+
+        # Verify beta is independently generated
         beta: str = result["beta"]
         assert isinstance(beta, str), "Beta should be a string"
         assert len(beta) == 32, "Beta should be 32 characters"
+        # Beta should be independent from token (not derived from it)
+        if token.startswith("ragflow-"):
+            token_without_prefix: str = token.replace("ragflow-", "")[:32]
+            assert beta != token_without_prefix, "Beta should be independently generated, not derived from token"
 
     @pytest.mark.p1
     def test_generate_user_api_key_appears_in_list(self, admin_session: requests.Session) -> None:
         """Test that generated API key appears in get_user_api_key list"""
         user_name: str = EMAIL
-        
+
         # Generate API key
         generated_key: Dict[str, Any] = generate_user_api_key(admin_session, user_name)
         token: str = generated_key["token"]
-        
+
         # Get all API keys for the user
         api_keys: List[Dict[str, Any]] = get_user_api_key(admin_session, user_name)
-        
+
         # Verify the generated key is in the list
         assert len(api_keys) > 0, "User should have at least one API key"
         token_found: bool = any(key.get("token") == token for key in api_keys)
@@ -71,9 +75,9 @@ class TestGenerateUserApiKey:
     def test_generate_user_api_key_response_structure(self, admin_session: requests.Session) -> None:
         """Test that generate_user_api_key returns correct response structure"""
         user_name: str = EMAIL
-        
+
         result: Dict[str, Any] = generate_user_api_key(admin_session, user_name)
-        
+
         # Verify all required fields
         assert "tenant_id" in result, "Response should have tenant_id"
         assert "token" in result, "Response should have token"
@@ -82,7 +86,7 @@ class TestGenerateUserApiKey:
         assert "create_date" in result, "Response should have create_date"
         assert "update_time" in result, "Response should have update_time"
         assert "update_date" in result, "Response should have update_date"
-        
+
         # Verify field types
         assert isinstance(result["tenant_id"], str), "tenant_id should be string"
         assert isinstance(result["token"], str), "token should be string"
@@ -94,18 +98,18 @@ class TestGenerateUserApiKey:
     def test_generate_user_api_key_multiple_times(self, admin_session: requests.Session) -> None:
         """Test generating multiple API keys for the same user"""
         user_name: str = EMAIL
-        
+
         # Generate first API key
         key1: Dict[str, Any] = generate_user_api_key(admin_session, user_name)
         token1: str = key1["token"]
-        
+
         # Generate second API key
         key2: Dict[str, Any] = generate_user_api_key(admin_session, user_name)
         token2: str = key2["token"]
-        
+
         # Tokens should be different
         assert token1 != token2, "Multiple API keys should have different tokens"
-        
+
         # Both should appear in the list
         api_keys: List[Dict[str, Any]] = get_user_api_key(admin_session, user_name)
         tokens: List[str] = [key.get("token") for key in api_keys]
@@ -131,11 +135,11 @@ class TestGenerateUserApiKey:
     def test_generate_user_api_key_tenant_id_consistency(self, admin_session: requests.Session) -> None:
         """Test that generated API keys have consistent tenant_id"""
         user_name: str = EMAIL
-        
+
         # Generate multiple API keys
         key1: Dict[str, Any] = generate_user_api_key(admin_session, user_name)
         key2: Dict[str, Any] = generate_user_api_key(admin_session, user_name)
-        
+
         # Tenant IDs should be the same for the same user
         assert key1["tenant_id"] == key2["tenant_id"], "Same user should have same tenant_id"
 
@@ -143,26 +147,29 @@ class TestGenerateUserApiKey:
     def test_generate_user_api_key_token_format(self, admin_session: requests.Session) -> None:
         """Test that generated API key has correct format"""
         user_name: str = EMAIL
-        
+
         result: Dict[str, Any] = generate_user_api_key(admin_session, user_name)
         token: str = result["token"]
-        
+
         # Token should be a non-empty string
         assert isinstance(token, str), "Token should be a string"
         assert len(token) > 0, "Token should not be empty"
-        
-        # Beta should be derived from token (first 32 chars after removing "ragflow-")
+
+        # Beta should be independently generated (32 chars, not derived from token)
         beta: str = result["beta"]
+        assert isinstance(beta, str), "Beta should be a string"
+        assert len(beta) == 32, "Beta should be 32 characters"
+        # Beta should be independent from token (not derived from it)
         if token.startswith("ragflow-"):
-            expected_beta: str = token.replace("ragflow-", "")[:32]
-            assert beta == expected_beta, "Beta should be first 32 chars of token after 'ragflow-'"
+            token_without_prefix: str = token.replace("ragflow-", "")[:32]
+            assert beta != token_without_prefix, "Beta should be independently generated, not derived from token"
 
     @pytest.mark.p3
     def test_generate_user_api_key_without_auth(self) -> None:
         """Test that generating API key without admin auth fails"""
         session: requests.Session = requests.Session()
         user_name: str = EMAIL
-        
+
         with pytest.raises(Exception) as excinfo:
             generate_user_api_key(session, user_name)
         # Should fail with authentication error
@@ -172,19 +179,19 @@ class TestGenerateUserApiKey:
     def test_generate_user_api_key_timestamp_fields(self, admin_session: requests.Session) -> None:
         """Test that generated API key has correct timestamp fields"""
         user_name: str = EMAIL
-        
+
         result: Dict[str, Any] = generate_user_api_key(admin_session, user_name)
-        
+
         # create_time should be a timestamp (int)
         create_time: Any = result.get("create_time")
         assert create_time is None or isinstance(create_time, int), "create_time should be int or None"
         if create_time is not None:
             assert create_time > 0, "create_time should be positive"
-        
+
         # create_date should be a date string
         create_date: Any = result.get("create_date")
         assert create_date is None or isinstance(create_date, str), "create_date should be string or None"
-        
+
         # update_time and update_date should be None for new keys
         assert result.get("update_time") is None, "update_time should be None for new keys"
         assert result.get("update_date") is None, "update_date should be None for new keys"
@@ -193,10 +200,10 @@ class TestGenerateUserApiKey:
     def test_generate_user_api_key_case_sensitivity(self, admin_session: requests.Session) -> None:
         """Test that username is case-sensitive"""
         user_name: str = EMAIL
-        
+
         # Generate with correct case
         key1: Dict[str, Any] = generate_user_api_key(admin_session, user_name)
-        
+
         # Try with different case - might fail or might work depending on implementation
         try:
             key2: Dict[str, Any] = generate_user_api_key(admin_session, user_name.upper())
@@ -205,4 +212,3 @@ class TestGenerateUserApiKey:
         except Exception:
             # Expected to fail if username is case-sensitive
             pass
-

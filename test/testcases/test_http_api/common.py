@@ -28,6 +28,7 @@ CHUNK_API_URL = f"/api/{VERSION}/datasets/{{dataset_id}}/documents/{{document_id
 CHAT_ASSISTANT_API_URL = f"/api/{VERSION}/chats"
 SESSION_WITH_CHAT_ASSISTANT_API_URL = f"/api/{VERSION}/chats/{{chat_id}}/sessions"
 SESSION_WITH_AGENT_API_URL = f"/api/{VERSION}/agents/{{agent_id}}/sessions"
+MODELS_API_URL = f"/api/{VERSION}/models"
 
 
 # DATASET MANAGEMENT
@@ -247,3 +248,34 @@ def batch_add_sessions_with_chat_assistant(auth, chat_assistant_id, num):
         res = create_session_with_chat_assistant(auth, chat_assistant_id, {"name": f"session_with_chat_assistant_{i}"})
         session_ids.append(res["data"]["id"])
     return session_ids
+
+
+# USER MODELS MANAGEMENT
+def add_model(auth, payload=None, *, headers=HEADERS, data=None):
+    url = f"{HOST_ADDRESS}{MODELS_API_URL}"
+    res = requests.post(url=url, headers=headers, auth=auth, json=payload, data=data)
+    return res.json()
+
+
+def list_user_models(auth, params=None, *, headers=HEADERS):
+    url = f"{HOST_ADDRESS}{MODELS_API_URL}"
+    res = requests.get(url=url, headers=headers, auth=auth, params=params)
+    return res.json()
+
+
+def remove_model(auth, payload=None, *, headers=HEADERS, data=None):
+    url = f"{HOST_ADDRESS}{MODELS_API_URL}"
+    res = requests.delete(url=url, headers=headers, auth=auth, json=payload, data=data)
+    return res.json()
+
+
+def set_default_models(auth, payload=None, *, headers=HEADERS, data=None):
+    url = f"{HOST_ADDRESS}{MODELS_API_URL}/default"
+    res = requests.post(url=url, headers=headers, auth=auth, json=payload, data=data)
+    return res.json()
+
+
+def get_default_models(auth, params=None, *, headers=HEADERS):
+    url = f"{HOST_ADDRESS}{MODELS_API_URL}/default"
+    res = requests.get(url=url, headers=headers, auth=auth, params=params)
+    return res.json()

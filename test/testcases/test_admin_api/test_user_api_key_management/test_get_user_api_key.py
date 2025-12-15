@@ -27,17 +27,17 @@ class TestGetUserApiKey:
     def test_get_user_api_key_success(self, admin_session: requests.Session) -> None:
         """Test successfully getting API keys for a user"""
         user_name: str = EMAIL
-        
+
         # Generate a test API key first
         generated_key: Dict[str, Any] = generate_user_api_key(admin_session, user_name)
-        
+
         # Get all API keys for the user
         api_keys: List[Dict[str, Any]] = get_user_api_key(admin_session, user_name)
-        
+
         # Verify response is a list
         assert isinstance(api_keys, list), "API keys should be returned as a list"
         assert len(api_keys) > 0, "User should have at least one API key"
-        
+
         # Verify the generated key is in the list
         token: str = generated_key["token"]
         token_found: bool = any(key.get("token") == token for key in api_keys)
@@ -47,17 +47,17 @@ class TestGetUserApiKey:
     def test_get_user_api_key_response_structure(self, admin_session: requests.Session) -> None:
         """Test that get_user_api_key returns correct response structure"""
         user_name: str = EMAIL
-        
+
         # Generate a test API key first
         generate_user_api_key(admin_session, user_name)
-        
+
         # Get all API keys for the user
         api_keys: List[Dict[str, Any]] = get_user_api_key(admin_session, user_name)
-        
+
         # Verify response is a list
         assert isinstance(api_keys, list), "API keys should be returned as a list"
         assert len(api_keys) > 0, "User should have at least one API key"
-        
+
         # Verify structure of each API key in the list
         for key in api_keys:
             assert isinstance(key, dict), "Each API key should be a dictionary"
@@ -65,7 +65,7 @@ class TestGetUserApiKey:
             assert "beta" in key, "API key should contain beta"
             assert "tenant_id" in key, "API key should contain tenant_id"
             assert "create_date" in key, "API key should contain create_date"
-            
+
             # Verify field types
             assert isinstance(key["token"], str), "token should be string"
             assert isinstance(key["beta"], str), "beta should be string"
@@ -77,21 +77,21 @@ class TestGetUserApiKey:
     def test_get_user_api_key_includes_newly_generated(self, admin_session: requests.Session) -> None:
         """Test that newly generated API key appears in get_user_api_key list"""
         user_name: str = EMAIL
-        
+
         # Get initial count of API keys
         initial_keys: List[Dict[str, Any]] = get_user_api_key(admin_session, user_name)
         initial_count: int = len(initial_keys)
-        
+
         # Generate a new API key
         generated_key: Dict[str, Any] = generate_user_api_key(admin_session, user_name)
         new_token: str = generated_key["token"]
-        
+
         # Get API keys again
         updated_keys: List[Dict[str, Any]] = get_user_api_key(admin_session, user_name)
-        
+
         # Verify count increased
         assert len(updated_keys) > initial_count, "API key count should increase after generating new key"
-        
+
         # Verify the new token is in the list
         token_found: bool = any(key.get("token") == new_token for key in updated_keys)
         assert token_found, "Newly generated API key should appear in the list"
@@ -100,17 +100,17 @@ class TestGetUserApiKey:
     def test_get_user_api_key_multiple_keys(self, admin_session: requests.Session) -> None:
         """Test getting multiple API keys for the same user"""
         user_name: str = EMAIL
-        
+
         # Generate multiple API keys
         key1: Dict[str, Any] = generate_user_api_key(admin_session, user_name)
         token1: str = key1["token"]
-        
+
         key2: Dict[str, Any] = generate_user_api_key(admin_session, user_name)
         token2: str = key2["token"]
-        
+
         # Get all API keys
         api_keys: List[Dict[str, Any]] = get_user_api_key(admin_session, user_name)
-        
+
         # Verify both tokens are in the list
         tokens: List[str] = [key.get("token") for key in api_keys]
         assert token1 in tokens, "First token should be in the list"
@@ -121,14 +121,14 @@ class TestGetUserApiKey:
     def test_get_user_api_key_tenant_id_consistency(self, admin_session: requests.Session) -> None:
         """Test that all API keys for a user have the same tenant_id"""
         user_name: str = EMAIL
-        
+
         # Generate multiple API keys
         generate_user_api_key(admin_session, user_name)
         generate_user_api_key(admin_session, user_name)
-        
+
         # Get all API keys
         api_keys: List[Dict[str, Any]] = get_user_api_key(admin_session, user_name)
-        
+
         # Verify all keys have the same tenant_id
         tenant_ids: List[str] = [key.get("tenant_id") for key in api_keys if key.get("tenant_id")]
         if len(tenant_ids) > 0:
@@ -159,14 +159,14 @@ class TestGetUserApiKey:
     def test_get_user_api_key_token_uniqueness(self, admin_session: requests.Session) -> None:
         """Test that all API keys in the list have unique tokens"""
         user_name: str = EMAIL
-        
+
         # Generate multiple API keys
         generate_user_api_key(admin_session, user_name)
         generate_user_api_key(admin_session, user_name)
-        
+
         # Get all API keys
         api_keys: List[Dict[str, Any]] = get_user_api_key(admin_session, user_name)
-        
+
         # Verify all tokens are unique
         tokens: List[str] = [key.get("token") for key in api_keys if key.get("token")]
         assert len(tokens) == len(set(tokens)), "All API keys should have unique tokens"
@@ -176,7 +176,7 @@ class TestGetUserApiKey:
         """Test that getting API keys without admin auth fails"""
         session: requests.Session = requests.Session()
         user_name: str = EMAIL
-        
+
         with pytest.raises(Exception) as excinfo:
             get_user_api_key(session, user_name)
         # Should fail with authentication error
@@ -186,13 +186,13 @@ class TestGetUserApiKey:
     def test_get_user_api_key_beta_format(self, admin_session: requests.Session) -> None:
         """Test that beta field in API keys has correct format"""
         user_name: str = EMAIL
-        
+
         # Generate a test API key
         generate_user_api_key(admin_session, user_name)
-        
+
         # Get all API keys
         api_keys: List[Dict[str, Any]] = get_user_api_key(admin_session, user_name)
-        
+
         # Verify beta format for all keys
         for key in api_keys:
             beta: str = key.get("beta", "")
@@ -203,21 +203,21 @@ class TestGetUserApiKey:
     def test_get_user_api_key_date_fields(self, admin_session: requests.Session) -> None:
         """Test that date fields in API keys are properly formatted"""
         user_name: str = EMAIL
-        
+
         # Generate a test API key
         generate_user_api_key(admin_session, user_name)
-        
+
         # Get all API keys
         api_keys: List[Dict[str, Any]] = get_user_api_key(admin_session, user_name)
-        
+
         # Verify date fields
         for key in api_keys:
             create_date: Any = key.get("create_date")
             update_date: Any = key.get("update_date")
-            
+
             # create_date should be present (string or None)
             assert create_date is None or isinstance(create_date, str), "create_date should be string or None"
-            
+
             # update_date should be present (string or None)
             assert update_date is None or isinstance(update_date, str), "update_date should be string or None"
 
@@ -225,11 +225,11 @@ class TestGetUserApiKey:
     def test_get_user_api_key_case_sensitivity(self, admin_session: requests.Session) -> None:
         """Test that username is case-sensitive when getting API keys"""
         user_name: str = EMAIL
-        
+
         # Generate a test API key with correct case
         generated_key: Dict[str, Any] = generate_user_api_key(admin_session, user_name)
         token: str = generated_key["token"]
-        
+
         # Try to get keys with different case
         try:
             api_keys_upper: List[Dict[str, Any]] = get_user_api_key(admin_session, user_name.upper())
@@ -240,9 +240,8 @@ class TestGetUserApiKey:
         except Exception:
             # Expected to fail if username is case-sensitive
             pass
-        
+
         # Verify correct case works
         api_keys: List[Dict[str, Any]] = get_user_api_key(admin_session, user_name)
         tokens: List[str] = [key.get("token") for key in api_keys]
         assert token in tokens, "Generated token should be in the list for correct case"
-
