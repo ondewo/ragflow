@@ -17,6 +17,7 @@ from typing import Any, Dict
 
 import pytest
 from common import get_default_models, set_default_models
+from common.constants import RetCode
 from configs import INVALID_API_TOKEN
 from libs.auth import RAGFlowHttpApiAuth
 
@@ -26,10 +27,10 @@ class TestAuthorization:
     @pytest.mark.parametrize(
         "invalid_auth, expected_code, expected_message",
         [
-            (None, 0, "`Authorization` can't be empty"),
+            (None, RetCode.SUCCESS, "`Authorization` can't be empty"),
             (
                 RAGFlowHttpApiAuth(INVALID_API_TOKEN),
-                109,
+                RetCode.AUTHENTICATION_ERROR,
                 "Authentication error: API key is invalid!",
             ),
         ],
@@ -43,10 +44,10 @@ class TestAuthorization:
     @pytest.mark.parametrize(
         "invalid_auth, expected_code, expected_message",
         [
-            (None, 0, "`Authorization` can't be empty"),
+            (None, RetCode.SUCCESS, "`Authorization` can't be empty"),
             (
                 RAGFlowHttpApiAuth(INVALID_API_TOKEN),
-                109,
+                RetCode.AUTHENTICATION_ERROR,
                 "Authentication error: API key is invalid!",
             ),
         ],
@@ -61,18 +62,17 @@ class TestAuthorization:
 class TestGetDefaultModels:
     @pytest.mark.p1
     def test_get_default_models_structure(self, HttpApiAuth):
-        """Test that get_default_models returns all expected fields"""
+        """Test that get_default_models returns exactly the expected fields and nothing else"""
         res = get_default_models(HttpApiAuth)
-        assert res["code"] == 0, res
+        assert res["code"] == RetCode.SUCCESS, res
         models: Dict[str, Any] = res["data"]
 
-        # Verify all expected fields are present
-        assert "llm_id" in models
-        assert "embd_id" in models
-        assert "asr_id" in models
-        assert "img2txt_id" in models
-        assert "rerank_id" in models
-        assert "tts_id" in models
+        # Define exactly the expected keys
+        expected_keys = {"llm_id", "embd_id", "asr_id", "img2txt_id", "rerank_id", "tts_id"}
+        
+        # Verify the response contains exactly these keys and nothing else
+        actual_keys = set(models.keys())
+        assert actual_keys == expected_keys, f"Expected keys {expected_keys}, but got {actual_keys}"
 
         # Verify all fields are strings (or None for tts_id)
         assert isinstance(models.get("llm_id"), str) or models.get("llm_id") is None
@@ -83,35 +83,14 @@ class TestGetDefaultModels:
         assert isinstance(models.get("tts_id"), str) or models.get("tts_id") is None
 
     @pytest.mark.p1
-    def test_get_default_models_empty(self, HttpApiAuth):
-        """Test getting default models returns valid response structure"""
-        res = get_default_models(HttpApiAuth)
-        assert res["code"] == 0, res
-        models: Dict[str, Any] = res["data"]
-
-        # Verify the function returns a valid response with all expected fields
-        # Values may be empty strings, None (for tts_id), or actual model IDs
-        # depending on the initial state
-        assert "llm_id" in models
-        assert "embd_id" in models
-        assert "asr_id" in models
-        assert "img2txt_id" in models
-        assert "rerank_id" in models
-        assert "tts_id" in models
-
-        # All values should be strings or None
-        for key, value in models.items():
-            assert isinstance(value, str) or value is None, f"{key} should be str or None, got {type(value)}"
-
-    @pytest.mark.p1
     def test_get_llm_id_after_set(self, HttpApiAuth):
         """Test getting LLM model ID after setting it"""
         model_id: str = "glm-4-flash@Builtin"
         res = set_default_models(HttpApiAuth, {"llm_id": model_id})
-        assert res["code"] == 0, res
+        assert res["code"] == RetCode.SUCCESS, res
 
         res = get_default_models(HttpApiAuth)
-        assert res["code"] == 0, res
+        assert res["code"] == RetCode.SUCCESS, res
         models: Dict[str, Any] = res["data"]
         assert models.get("llm_id") == model_id
 
@@ -120,10 +99,10 @@ class TestGetDefaultModels:
         """Test getting embedding model ID after setting it"""
         model_id: str = "BAAI/bge-small-en-v1.5@Builtin"
         res = set_default_models(HttpApiAuth, {"embd_id": model_id})
-        assert res["code"] == 0, res
+        assert res["code"] == RetCode.SUCCESS, res
 
         res = get_default_models(HttpApiAuth)
-        assert res["code"] == 0, res
+        assert res["code"] == RetCode.SUCCESS, res
         models: Dict[str, Any] = res["data"]
         assert models.get("embd_id") == model_id
 
@@ -132,10 +111,10 @@ class TestGetDefaultModels:
         """Test getting image-to-text model ID after setting it"""
         model_id: str = "glm-4v@Builtin"
         res = set_default_models(HttpApiAuth, {"img2txt_id": model_id})
-        assert res["code"] == 0, res
+        assert res["code"] == RetCode.SUCCESS, res
 
         res = get_default_models(HttpApiAuth)
-        assert res["code"] == 0, res
+        assert res["code"] == RetCode.SUCCESS, res
         models: Dict[str, Any] = res["data"]
         assert models.get("img2txt_id") == model_id
 
@@ -148,10 +127,10 @@ class TestGetDefaultModels:
             "img2txt_id": "glm-4v@Builtin",
         }
         res = set_default_models(HttpApiAuth, payload)
-        assert res["code"] == 0, res
+        assert res["code"] == RetCode.SUCCESS, res
 
         res = get_default_models(HttpApiAuth)
-        assert res["code"] == 0, res
+        assert res["code"] == RetCode.SUCCESS, res
         models: Dict[str, Any] = res["data"]
         assert models.get("llm_id") == payload["llm_id"]
         assert models.get("embd_id") == payload["embd_id"]
@@ -169,10 +148,10 @@ class TestGetDefaultModels:
             "tts_id": "",
         }
         res = set_default_models(HttpApiAuth, payload)
-        assert res["code"] == 0, res
+        assert res["code"] == RetCode.SUCCESS, res
 
         res = get_default_models(HttpApiAuth)
-        assert res["code"] == 0, res
+        assert res["code"] == RetCode.SUCCESS, res
         models: Dict[str, Any] = res["data"]
         assert models.get("llm_id") == payload["llm_id"]
         assert models.get("embd_id") == payload["embd_id"]
@@ -191,20 +170,20 @@ class TestGetDefaultModels:
             "embd_id": "BAAI/bge-small-en-v1.5@Builtin",
         }
         res = set_default_models(HttpApiAuth, initial_payload)
-        assert res["code"] == 0, res
+        assert res["code"] == RetCode.SUCCESS, res
 
         res = get_default_models(HttpApiAuth)
-        assert res["code"] == 0, res
+        assert res["code"] == RetCode.SUCCESS, res
         initial_models: Dict[str, Any] = res["data"]
         assert initial_models.get("llm_id") == initial_payload["llm_id"]
         assert initial_models.get("embd_id") == initial_payload["embd_id"]
 
         # Update one model
         res = set_default_models(HttpApiAuth, {"llm_id": "glm-4@Builtin"})
-        assert res["code"] == 0, res
+        assert res["code"] == RetCode.SUCCESS, res
 
         res = get_default_models(HttpApiAuth)
-        assert res["code"] == 0, res
+        assert res["code"] == RetCode.SUCCESS, res
         updated_models: Dict[str, Any] = res["data"]
         assert updated_models.get("llm_id") == "glm-4@Builtin"
         # Embedding should remain unchanged
@@ -217,21 +196,26 @@ class TestGetDefaultModels:
         # If not configured, it will use a builtin model instead
         model_id: str = "glm-4-flash@ZHIPU-AI"
         res = set_default_models(HttpApiAuth, {"llm_id": model_id})
-        if res["code"] == 0:
-            res = get_default_models(HttpApiAuth)
-            assert res["code"] == 0, res
-            models: Dict[str, Any] = res["data"]
+        
+        # Check response code - either success or argument error
+        assert res["code"] in [RetCode.SUCCESS, RetCode.ARGUMENT_ERROR], res
+        
+        if res["code"] == RetCode.SUCCESS:
+            # Model is configured, verify it can be retrieved
+            get_res = get_default_models(HttpApiAuth)
+            assert get_res["code"] == RetCode.SUCCESS, get_res
+            models: Dict[str, Any] = get_res["data"]
             assert models.get("llm_id") == model_id
         else:
-            # If model is not configured, fall back to builtin
-            if "not configured" in res["message"]:
-                model_id = "glm-4-flash@Builtin"
-                res = set_default_models(HttpApiAuth, {"llm_id": model_id})
-                assert res["code"] == 0, res
-                res = get_default_models(HttpApiAuth)
-                assert res["code"] == 0, res
-                models: Dict[str, Any] = res["data"]
-                assert models.get("llm_id") == model_id
+            # Model is not configured, verify error message and fall back to builtin
+            assert res["message"] == f"Model '{model_id}' (type: chat) is not configured. Please add the model first using POST /api/v1/models", res
+            model_id = "glm-4-flash@Builtin"
+            set_res = set_default_models(HttpApiAuth, {"llm_id": model_id})
+            assert set_res["code"] == RetCode.SUCCESS, set_res
+            get_res = get_default_models(HttpApiAuth)
+            assert get_res["code"] == RetCode.SUCCESS, get_res
+            models: Dict[str, Any] = get_res["data"]
+            assert models.get("llm_id") == model_id
 
     @pytest.mark.p2
     def test_get_models_after_partial_update(self, HttpApiAuth):
@@ -245,18 +229,18 @@ class TestGetDefaultModels:
                 "img2txt_id": "glm-4v@Builtin",
             },
         )
-        assert res["code"] == 0, res
+        assert res["code"] == RetCode.SUCCESS, res
 
         res = get_default_models(HttpApiAuth)
-        assert res["code"] == 0, res
+        assert res["code"] == RetCode.SUCCESS, res
         initial_models: Dict[str, Any] = res["data"]
 
         # Update only LLM
         res = set_default_models(HttpApiAuth, {"llm_id": "glm-4@Builtin"})
-        assert res["code"] == 0, res
+        assert res["code"] == RetCode.SUCCESS, res
 
         res = get_default_models(HttpApiAuth)
-        assert res["code"] == 0, res
+        assert res["code"] == RetCode.SUCCESS, res
         updated_models: Dict[str, Any] = res["data"]
         assert updated_models.get("llm_id") == "glm-4@Builtin"
         # Other models should remain unchanged
@@ -268,26 +252,26 @@ class TestGetDefaultModels:
         """Test getting models after sequential set operations"""
         # First set
         res = set_default_models(HttpApiAuth, {"llm_id": "glm-4-flash@Builtin"})
-        assert res["code"] == 0, res
+        assert res["code"] == RetCode.SUCCESS, res
         res = get_default_models(HttpApiAuth)
-        assert res["code"] == 0, res
+        assert res["code"] == RetCode.SUCCESS, res
         models: Dict[str, Any] = res["data"]
         assert models.get("llm_id") == "glm-4-flash@Builtin"
 
         # Second set
         res = set_default_models(HttpApiAuth, {"embd_id": "BAAI/bge-small-en-v1.5@Builtin"})
-        assert res["code"] == 0, res
+        assert res["code"] == RetCode.SUCCESS, res
         res = get_default_models(HttpApiAuth)
-        assert res["code"] == 0, res
+        assert res["code"] == RetCode.SUCCESS, res
         models: Dict[str, Any] = res["data"]
         assert models.get("llm_id") == "glm-4-flash@Builtin"  # Should remain
         assert models.get("embd_id") == "BAAI/bge-small-en-v1.5@Builtin"
 
         # Third set
         res = set_default_models(HttpApiAuth, {"img2txt_id": "glm-4v@Builtin"})
-        assert res["code"] == 0, res
+        assert res["code"] == RetCode.SUCCESS, res
         res = get_default_models(HttpApiAuth)
-        assert res["code"] == 0, res
+        assert res["code"] == RetCode.SUCCESS, res
         models: Dict[str, Any] = res["data"]
         assert models.get("llm_id") == "glm-4-flash@Builtin"  # Should remain
         assert models.get("embd_id") == "BAAI/bge-small-en-v1.5@Builtin"  # Should remain
@@ -303,18 +287,18 @@ class TestGetDefaultModels:
                 "embd_id": "BAAI/bge-small-en-v1.5@Builtin",
             },
         )
-        assert res["code"] == 0, res
+        assert res["code"] == RetCode.SUCCESS, res
 
         res1 = get_default_models(HttpApiAuth)
-        assert res1["code"] == 0, res1
+        assert res1["code"] == RetCode.SUCCESS, res1
         models1: Dict[str, Any] = res1["data"]
 
         res2 = get_default_models(HttpApiAuth)
-        assert res2["code"] == 0, res2
+        assert res2["code"] == RetCode.SUCCESS, res2
         models2: Dict[str, Any] = res2["data"]
 
         res3 = get_default_models(HttpApiAuth)
-        assert res3["code"] == 0, res3
+        assert res3["code"] == RetCode.SUCCESS, res3
         models3: Dict[str, Any] = res3["data"]
 
         # All calls should return the same values
@@ -331,10 +315,10 @@ class TestGetDefaultModels:
                 "embd_id": "BAAI/bge-small-en-v1.5@Builtin",
             },
         )
-        assert res["code"] == 0, res
+        assert res["code"] == RetCode.SUCCESS, res
 
         res = get_default_models(HttpApiAuth)
-        assert res["code"] == 0, res
+        assert res["code"] == RetCode.SUCCESS, res
         models: Dict[str, Any] = res["data"]
         # Verify the models we set are correct
         assert models.get("llm_id") == "glm-4-flash@Builtin"
@@ -357,14 +341,14 @@ class TestGetDefaultModels:
                 "embd_id": "BAAI/bge-small-en-v1.5@Builtin",
             },
         )
-        assert res["code"] == 0, res
+        assert res["code"] == RetCode.SUCCESS, res
 
         # Clear LLM with whitespace (but keep embd_id to satisfy "at least one" requirement)
         res = set_default_models(HttpApiAuth, {"llm_id": "   ", "embd_id": "BAAI/bge-small-en-v1.5@Builtin"})
-        assert res["code"] == 0, res
+        assert res["code"] == RetCode.SUCCESS, res
 
         res = get_default_models(HttpApiAuth)
-        assert res["code"] == 0, res
+        assert res["code"] == RetCode.SUCCESS, res
         models: Dict[str, Any] = res["data"]
         # LLM should be cleared (empty string)
         assert models.get("llm_id") == ""
@@ -376,7 +360,7 @@ class TestGetDefaultModels:
         # Note: We can't easily set rerank_id without a valid rerank model
         # So we just verify it's in the response
         res = get_default_models(HttpApiAuth)
-        assert res["code"] == 0, res
+        assert res["code"] == RetCode.SUCCESS, res
         models: Dict[str, Any] = res["data"]
         assert "rerank_id" in models
         assert isinstance(models.get("rerank_id"), str) or models.get("rerank_id") is None
@@ -387,7 +371,7 @@ class TestGetDefaultModels:
         # Note: We can't easily set asr_id without a valid ASR model
         # So we just verify it's in the response
         res = get_default_models(HttpApiAuth)
-        assert res["code"] == 0, res
+        assert res["code"] == RetCode.SUCCESS, res
         models: Dict[str, Any] = res["data"]
         assert "asr_id" in models
         assert isinstance(models.get("asr_id"), str) or models.get("asr_id") is None
@@ -398,7 +382,7 @@ class TestGetDefaultModels:
         # Note: We can't easily set tts_id without a valid TTS model
         # So we just verify it's in the response
         res = get_default_models(HttpApiAuth)
-        assert res["code"] == 0, res
+        assert res["code"] == RetCode.SUCCESS, res
         models: Dict[str, Any] = res["data"]
         assert "tts_id" in models
         # tts_id might be None from database
@@ -408,7 +392,7 @@ class TestGetDefaultModels:
     def test_get_models_response_format(self, HttpApiAuth):
         """Test that get_default_models returns a dictionary with correct format"""
         res = get_default_models(HttpApiAuth)
-        assert res["code"] == 0, res
+        assert res["code"] == RetCode.SUCCESS, res
         models: Dict[str, Any] = res["data"]
 
         # Should be a dictionary
@@ -430,24 +414,24 @@ class TestGetDefaultModels:
         """Test getting models after multiple changes to the same field"""
         # Set LLM to first value
         res = set_default_models(HttpApiAuth, {"llm_id": "glm-4-flash@Builtin"})
-        assert res["code"] == 0, res
+        assert res["code"] == RetCode.SUCCESS, res
         res = get_default_models(HttpApiAuth)
-        assert res["code"] == 0, res
+        assert res["code"] == RetCode.SUCCESS, res
         models: Dict[str, Any] = res["data"]
         assert models.get("llm_id") == "glm-4-flash@Builtin"
 
         # Change LLM to second value
         res = set_default_models(HttpApiAuth, {"llm_id": "glm-4@Builtin"})
-        assert res["code"] == 0, res
+        assert res["code"] == RetCode.SUCCESS, res
         res = get_default_models(HttpApiAuth)
-        assert res["code"] == 0, res
+        assert res["code"] == RetCode.SUCCESS, res
         models: Dict[str, Any] = res["data"]
         assert models.get("llm_id") == "glm-4@Builtin"
 
         # Change LLM back to first value
         res = set_default_models(HttpApiAuth, {"llm_id": "glm-4-flash@Builtin"})
-        assert res["code"] == 0, res
+        assert res["code"] == RetCode.SUCCESS, res
         res = get_default_models(HttpApiAuth)
-        assert res["code"] == 0, res
+        assert res["code"] == RetCode.SUCCESS, res
         models: Dict[str, Any] = res["data"]
         assert models.get("llm_id") == "glm-4-flash@Builtin"

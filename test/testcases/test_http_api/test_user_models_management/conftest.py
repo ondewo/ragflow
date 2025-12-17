@@ -18,7 +18,7 @@ from typing import List
 import pytest
 from pytest import FixtureRequest
 
-from common import remove_model
+from common import remove_factory
 
 
 @pytest.fixture(scope="class")
@@ -31,7 +31,7 @@ def cleanup_added_models(request: FixtureRequest, HttpApiAuth):
         # Remove test factories that were added during tests
         for factory in factories_to_cleanup:
             try:
-                remove_model(HttpApiAuth, {"llm_factory": factory})
+                remove_factory(HttpApiAuth, {"llm_factory": factory})
             except Exception:
                 # Ignore errors during cleanup (factory might not exist)
                 pass

@@ -155,7 +155,6 @@ dependencies = [
     "ffmpeg-python>=0.2.0",
     "imageio-ffmpeg>=0.6.0",
     "reportlab>=4.4.5",
-    "utils",
 ]
 
 [dependency-groups]
@@ -169,9 +168,6 @@ test = [
     "pytest-cov>=7.0.0",
     "python-docx>=1.1.2",
     "python-pptx>=1.0.2",
-    "quart-auth==0.11.0",
-    "quart-cors==0.8.0",
-    "Quart==0.20.0",
     "reportlab>=4.4.1",
     "requests>=2.32.2",
     "requests-toolbelt>=1.0.0",

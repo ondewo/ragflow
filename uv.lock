@@ -5708,7 +5708,6 @@ dependencies = [
     { name = "tiktoken" },
     { name = "trio" },
     { name = "umap-learn" },
-    { name = "utils" },
     { name = "valkey" },
     { name = "vertexai" },
     { name = "volcengine" },
@@ -5736,9 +5735,6 @@ test = [
     { name = "pytest-xdist" },
     { name = "python-docx" },
     { name = "python-pptx" },
-    { name = "quart" },
-    { name = "quart-auth" },
-    { name = "quart-cors" },
     { name = "reportlab" },
     { name = "requests" },
     { name = "requests-toolbelt" },
@@ -5880,7 +5876,6 @@ requires-dist = [
     { name = "tiktoken", specifier = "==0.7.0" },
     { name = "trio", specifier = ">=0.17.0,<0.29.0" },
     { name = "umap-learn", specifier = "==0.5.6" },
-    { name = "utils" },
     { name = "valkey", specifier = "==6.0.2" },
     { name = "vertexai", specifier = "==1.70.0" },
     { name = "volcengine", specifier = "==1.0.194" },
@@ -5908,9 +5903,6 @@ test = [
     { name = "pytest-xdist", specifier = ">=3.8.0" },
     { name = "python-docx", specifier = ">=1.1.2" },
     { name = "python-pptx", specifier = ">=1.0.2" },
-    { name = "quart", specifier = "==0.20.0" },
-    { name = "quart-auth", specifier = "==0.11.0" },
-    { name = "quart-cors", specifier = "==0.8.0" },
     { name = "reportlab", specifier = ">=4.4.1" },
     { name = "requests", specifier = ">=2.32.2" },
     { name = "requests-toolbelt", specifier = ">=1.0.0" },
@@ -7333,12 +7325,6 @@ wheels = [
 socks = [
     { name = "pysocks" },
 ]
-
-[[package]]
-name = "utils"
-version = "1.0.2"
-source = { registry = "https://pypi.tuna.tsinghua.edu.cn/simple" }
-sdist = { url = "https://pypi.tuna.tsinghua.edu.cn/packages/ad/1f/c196d21c2df061923154aecf24cab049a114394956e90c9bfbfdd398e27a/utils-1.0.2.tar.gz", hash = "sha256:f4d5157e27e9d434006b5b52a1ec951a34e53e7ecaa145d43a153ec452eb5d9e", size = 13203, upload-time = "2024-01-06T07:11:25.75Z" }
 
 [[package]]
 name = "uvicorn"

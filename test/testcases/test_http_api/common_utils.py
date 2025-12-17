@@ -263,7 +263,7 @@ def list_user_models(auth, params=None, *, headers=HEADERS):
     return res.json()
 
 
-def remove_model(auth, payload=None, *, headers=HEADERS, data=None):
+def remove_factory(auth, payload=None, *, headers=HEADERS, data=None):
     url = f"{HOST_ADDRESS}{MODELS_API_URL}"
     res = requests.delete(url=url, headers=headers, auth=auth, json=payload, data=data)
     return res.json()

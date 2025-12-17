@@ -17,6 +17,8 @@ import json
 import logging
 from typing import Any, Dict, List, Optional
 
+from quart import Response, request
+
 from api.db.services.user_service import TenantService
 from api.db.services.tenant_llm_service import TenantLLMService, LLMFactoriesService
 from api.db.services.llm_service import LLMService
@@ -31,7 +33,6 @@ from api.utils.api_utils import (
 )
 from common.constants import RetCode, StatusEnum, LLMType
 from rag.llm import ChatModel, EmbeddingModel, RerankModel
-from quart import Response, request
 
 
 @manager.route("/models/default", methods=["POST"])  # noqa: F821
@@ -381,7 +382,7 @@ async def add_model(tenant_id: str) -> Response:
 
 @manager.route("/models", methods=["DELETE"])  # noqa: F821
 @token_required
-async def remove_model(tenant_id: str) -> Response:
+async def remove_factory(tenant_id: str) -> Response:
     """
     Remove all models for a factory for the user.
 

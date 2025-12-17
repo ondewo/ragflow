@@ -17,6 +17,7 @@ from typing import Any, Dict, List
 
 import pytest
 from common import list_user_models
+from common.constants import RetCode
 from configs import INVALID_API_TOKEN
 from libs.auth import RAGFlowHttpApiAuth
 
@@ -26,10 +27,10 @@ class TestAuthorization:
     @pytest.mark.parametrize(
         "invalid_auth, expected_code, expected_message",
         [
-            (None, 0, "`Authorization` can't be empty"),
+            (None, RetCode.SUCCESS, "`Authorization` can't be empty"),
             (
                 RAGFlowHttpApiAuth(INVALID_API_TOKEN),
-                109,
+                RetCode.AUTHENTICATION_ERROR,
                 "Authentication error: API key is invalid!",
             ),
         ],
@@ -46,7 +47,7 @@ class TestListUserModels:
     def test_list_user_models_structure(self, HttpApiAuth):
         """Test that list_user_models returns a valid dictionary structure"""
         res = list_user_models(HttpApiAuth)
-        assert res["code"] == 0, res
+        assert res["code"] == RetCode.SUCCESS, res
         models: Dict[str, Any] = res["data"]
 
         # Should return a dictionary
@@ -66,7 +67,7 @@ class TestListUserModels:
     def test_list_user_models_basic_fields(self, HttpApiAuth):
         """Test that list_user_models returns models with basic fields when include_details=false"""
         res = list_user_models(HttpApiAuth, {"include_details": "false"})
-        assert res["code"] == 0, res
+        assert res["code"] == RetCode.SUCCESS, res
         models: Dict[str, Any] = res["data"]
 
         # Check structure for each factory
@@ -87,7 +88,7 @@ class TestListUserModels:
     def test_list_user_models_with_details(self, HttpApiAuth):
         """Test that list_user_models returns models with detailed fields when include_details=true"""
         res = list_user_models(HttpApiAuth, {"include_details": "true"})
-        assert res["code"] == 0, res
+        assert res["code"] == RetCode.SUCCESS, res
         models: Dict[str, Any] = res["data"]
 
         # Check structure for each factory
@@ -116,24 +117,26 @@ class TestListUserModels:
         models_explicit: Dict[str, Any] = res_explicit["data"]
 
         # Both should return the same structure (no detailed fields)
+        # Both should have the same factories
+        assert set(models_basic.keys()) == set(models_explicit.keys())
+        
         for factory_name in models_basic.keys():
-            if factory_name in models_explicit:
-                llm_basic: List[Dict[str, Any]] = models_basic[factory_name]["llm"]
-                llm_explicit: List[Dict[str, Any]] = models_explicit[factory_name]["llm"]
+            llm_basic: List[Dict[str, Any]] = models_basic[factory_name]["llm"]
+            llm_explicit: List[Dict[str, Any]] = models_explicit[factory_name]["llm"]
 
-                # Check that both have the same number of models
-                assert len(llm_basic) == len(llm_explicit)
+            # Check that both have the same number of models
+            assert len(llm_basic) == len(llm_explicit)
 
-                # Check that basic models don't have detailed fields
-                for model in llm_basic:
-                    assert "api_base" not in model
-                    assert "max_tokens" not in model
+            # Check that basic models don't have detailed fields
+            for model in llm_basic:
+                assert "api_base" not in model
+                assert "max_tokens" not in model
 
     @pytest.mark.p1
     def test_list_user_models_model_types(self, HttpApiAuth):
         """Test that list_user_models returns models with valid types"""
         res = list_user_models(HttpApiAuth)
-        assert res["code"] == 0, res
+        assert res["code"] == RetCode.SUCCESS, res
         models: Dict[str, Any] = res["data"]
 
         for factory_name, factory_data in models.items():
@@ -147,7 +150,7 @@ class TestListUserModels:
     def test_list_user_models_model_names(self, HttpApiAuth):
         """Test that list_user_models returns models with valid names"""
         res = list_user_models(HttpApiAuth)
-        assert res["code"] == 0, res
+        assert res["code"] == RetCode.SUCCESS, res
         models: Dict[str, Any] = res["data"]
 
         for factory_name, factory_data in models.items():
@@ -162,7 +165,7 @@ class TestListUserModels:
     def test_list_user_models_used_token(self, HttpApiAuth):
         """Test that list_user_models returns models with used_token field"""
         res = list_user_models(HttpApiAuth)
-        assert res["code"] == 0, res
+        assert res["code"] == RetCode.SUCCESS, res
         models: Dict[str, Any] = res["data"]
 
         for factory_name, factory_data in models.items():
@@ -177,7 +180,7 @@ class TestListUserModels:
     def test_list_user_models_status(self, HttpApiAuth):
         """Test that list_user_models returns models with status field"""
         res = list_user_models(HttpApiAuth)
-        assert res["code"] == 0, res
+        assert res["code"] == RetCode.SUCCESS, res
         models: Dict[str, Any] = res["data"]
 
         for factory_name, factory_data in models.items():
@@ -191,7 +194,7 @@ class TestListUserModels:
     def test_list_user_models_api_base_with_details(self, HttpApiAuth):
         """Test that list_user_models returns api_base when include_details=true"""
         res = list_user_models(HttpApiAuth, {"include_details": "true"})
-        assert res["code"] == 0, res
+        assert res["code"] == RetCode.SUCCESS, res
         models: Dict[str, Any] = res["data"]
 
         for factory_name, factory_data in models.items():
@@ -205,7 +208,7 @@ class TestListUserModels:
     def test_list_user_models_max_tokens_with_details(self, HttpApiAuth):
         """Test that list_user_models returns max_tokens when include_details=true"""
         res = list_user_models(HttpApiAuth, {"include_details": "true"})
-        assert res["code"] == 0, res
+        assert res["code"] == RetCode.SUCCESS, res
         models: Dict[str, Any] = res["data"]
 
         for factory_name, factory_data in models.items():
@@ -236,38 +239,49 @@ class TestListUserModels:
 
     @pytest.mark.p2
     def test_list_user_models_tags(self, HttpApiAuth):
-        """Test that list_user_models returns factory tags"""
+        """Test that list_user_models returns correct factory tags"""
         res = list_user_models(HttpApiAuth)
-        assert res["code"] == 0, res
+        assert res["code"] == RetCode.SUCCESS, res
         models: Dict[str, Any] = res["data"]
 
+        # Verify tags exist and are correct for each factory
         for factory_name, factory_data in models.items():
-            factory_data.get("tags")
-            # tags may be None, dict, or other types depending on factory
-            # Just verify the key exists
-            assert "tags" in factory_data
+            assert "tags" in factory_data, f"Factory {factory_name} should have 'tags' key"
+            tags = factory_data["tags"]
+            
+            # Tags are stored as CharField in database, so should be string or None
+            # Verify the type is correct
+            assert tags is None or isinstance(tags, str), \
+                f"Factory {factory_name} tags should be None or str, got {type(tags)}"
 
     @pytest.mark.p2
-    def test_list_user_models_builtin_factory(self, HttpApiAuth):
-        """Test that list_user_models includes Builtin factory models"""
-        res = list_user_models(HttpApiAuth)
-        assert res["code"] == 0, res
-        models: Dict[str, Any] = res["data"]
+    def test_list_user_models_tags_consistency(self, HttpApiAuth):
+        """Test that tags are consistent between include_details=true and false"""
+        res_basic = list_user_models(HttpApiAuth, {"include_details": "false"})
+        assert res_basic["code"] == RetCode.SUCCESS, res_basic
+        models_basic: Dict[str, Any] = res_basic["data"]
 
-        # Builtin factory should be present (it's always available)
-        # Note: This may not always be true if no builtin models are configured
-        # So we just check that if Builtin exists, it has the correct structure
-        if "Builtin" in models:
-            builtin_data: Dict[str, Any] = models["Builtin"]
-            assert "tags" in builtin_data
-            assert "llm" in builtin_data
-            assert isinstance(builtin_data["llm"], list)
+        res_detailed = list_user_models(HttpApiAuth, {"include_details": "true"})
+        assert res_detailed["code"] == RetCode.SUCCESS, res_detailed
+        models_detailed: Dict[str, Any] = res_detailed["data"]
+
+        # Both should have the same factories
+        assert set(models_basic.keys()) == set(models_detailed.keys()), \
+            "Basic and detailed responses should have the same factories"
+
+        # Tags should be exactly the same for each factory
+        for factory_name in models_basic.keys():
+            tags_basic = models_basic[factory_name]["tags"]
+            tags_detailed = models_detailed[factory_name]["tags"]
+            assert tags_basic == tags_detailed, \
+                f"Factory {factory_name} tags should be the same in basic and detailed responses. " \
+                f"Basic: {tags_basic}, Detailed: {tags_detailed}"
 
     @pytest.mark.p2
     def test_list_user_models_empty_factory(self, HttpApiAuth):
         """Test that list_user_models handles empty factory lists gracefully"""
         res = list_user_models(HttpApiAuth)
-        assert res["code"] == 0, res
+        assert res["code"] == RetCode.SUCCESS, res
         models: Dict[str, Any] = res["data"]
 
         # Each factory should have an 'llm' list (even if empty)
@@ -307,7 +321,7 @@ class TestListUserModels:
     def test_list_user_models_response_format(self, HttpApiAuth):
         """Test that list_user_models returns data in the correct format"""
         res = list_user_models(HttpApiAuth)
-        assert res["code"] == 0, res
+        assert res["code"] == RetCode.SUCCESS, res
         models: Dict[str, Any] = res["data"]
 
         # Top level should be a dictionary
@@ -331,7 +345,7 @@ class TestListUserModels:
         # Make multiple calls
         for _ in range(3):
             res = list_user_models(HttpApiAuth)
-            assert res["code"] == 0, res
+            assert res["code"] == RetCode.SUCCESS, res
             models: Dict[str, Any] = res["data"]
             assert isinstance(models, dict)
             # Verify structure is consistent

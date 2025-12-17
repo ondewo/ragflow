@@ -25,23 +25,27 @@ ADMIN_HOST_ADDRESS = os.getenv("ADMIN_HOST_ADDRESS", "http://127.0.0.1:9381")
 
 
 def generate_user_api_key(session: requests.Session, user_name: str) -> Dict[str, Any]:
-    """Helper function to generate API key for a user"""
+    """Helper function to generate API key for a user
+    
+    Returns:
+        Dict containing the full API response with keys: code, message, data
+    """
     url: str = f"{ADMIN_HOST_ADDRESS}/api/{VERSION}/admin/users/{user_name}/new_token"
     response: requests.Response = session.post(url)
     try:
         res_json: Dict[str, Any] = response.json()
     except requests.exceptions.JSONDecodeError as e:
         raise Exception(f"Failed to parse JSON response. Status: {response.status_code}, Response: {response.text[:200]}") from e
-    if res_json.get("code") != 0:
-        raise Exception(res_json.get("message"))
-    return res_json.get("data")
+    return res_json
 
 
-def get_user_api_key(session: requests.Session, username: str) -> list[Dict[str, Any]]:
-    """Helper function to get API keys for a user"""
+def get_user_api_key(session: requests.Session, username: str) -> Dict[str, Any]:
+    """Helper function to get API keys for a user
+    
+    Returns:
+        Dict containing the full API response with keys: code, message, data
+    """
     url: str = f"{ADMIN_HOST_ADDRESS}/api/{VERSION}/admin/users/{username}/token_list"
     response: requests.Response = session.get(url)
     res_json: Dict[str, Any] = response.json()
-    if res_json.get("code") != 0:
-        raise Exception(res_json.get("message"))
-    return res_json.get("data")
+    return res_json

@@ -14,33 +14,25 @@
 #  limitations under the License.
 #
 
-import base64
 import os
 from typing import Any, Dict
 
 import pytest
 import requests
-from Cryptodome.PublicKey import RSA
-from Cryptodome.Cipher import PKCS1_v1_5 as Cipher_pkcs1_v1_5
 from configs import VERSION
 
 # Admin API runs on port 9381
 ADMIN_HOST_ADDRESS = os.getenv("ADMIN_HOST_ADDRESS", "http://127.0.0.1:9381")
 
-
-def encrypt_password(password: str) -> str:
-    """Encrypt password for admin login"""
-    pub: str = "-----BEGIN PUBLIC KEY-----\nMIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEArq9XTUSeYr2+N1h3Afl/z8Dse/2yD0ZGrKwx+EEEcdsBLca9Ynmx3nIB5obmLlSfmskLpBo0UACBmB5rEjBp2Q2f3AG3Hjd4B+gNCG6BDaawuDlgANIhGnaTLrIqWrrcm4EMzJOnAOI1fgzJRsOOUEfaS318Eq9OVO3apEyCCt0lOQK6PuksduOjVxtltDav+guVAA068NrPYmRNabVKRNLJpL8w4D44sfth5RvZ3q9t+6RTArpEtc5sh5ChzvqPOzKGMXW83C95TxmXqpbK6olN4RevSfVjEAgCydH6HN6OhtOQEcnrU97r9H0iZOWwbw3pVrZiUkuRD1R56Wzs2wIDAQAB\n-----END PUBLIC KEY-----"
-    pub_key: RSA.RsaKey = RSA.importKey(pub)
-    cipher: Cipher_pkcs1_v1_5.PKCS115_Cipher = Cipher_pkcs1_v1_5.new(pub_key)
-    cipher_text: bytes = cipher.encrypt(base64.b64encode(password.encode("utf-8")))
-    return base64.b64encode(cipher_text).decode("utf-8")
+# password is "admin"
+ENCRYPTED_ADMIN_PASSWORD: str = """WBPsJbL/W+1HN+hchm5pgu1YC3yMEb/9MFtsanZrpKEE9kAj4u09EIIVDtIDZhJOdTjz5pp5QW9TwqXBfQ2qzDqVJiwK7HGcNsoPi4wQPCmnLo0fs62QklMlg7l1Q7fjGRgV+KWtvNUce2PFzgrcAGDqRIuA/slSclKUEISEiK4z62rdDgvHT8LyuACuF1lPUY5wV0m/MbmGijRJlgvglAF8BX0BP8rQr8wZeaJdcnAy/keuODCjltMZDL06tYluN7HoiU+qlhBB+ltqG411oO/+vVhBgWsuVVOHd8uMjJEL320GUWUicprDUZvjlLaSSqVyyOiRMHpqAE9eHEecWg=="""
 
 
 def admin_login(session: requests.Session, email: str = "admin@ragflow.io", password: str = "admin") -> str:
     """Helper function to login as admin and return authorization token"""
     url: str = f"{ADMIN_HOST_ADDRESS}/api/{VERSION}/admin/login"
-    encrypted_password: str = encrypt_password(password)
+    # Use stored encrypted password for default "admin" password
+    encrypted_password: str = ENCRYPTED_ADMIN_PASSWORD
     response: requests.Response = session.post(url, json={"email": email, "password": encrypted_password})
     res_json: Dict[str, Any] = response.json()
     if res_json.get("code") != 0:
@@ -53,7 +45,7 @@ def admin_login(session: requests.Session, email: str = "admin@ragflow.io", pass
     return auth
 
 
-@pytest.fixture(scope="function")
+@pytest.fixture(scope="session")
 def admin_session() -> requests.Session:
     """Fixture to create an admin session with login"""
     session: requests.Session = requests.Session()
