@@ -8,7 +8,7 @@ import { FormLayout } from '@/constants/form';
 import { DocumentParserType } from '@/constants/knowledge';
 import { PermissionRole } from '@/constants/permission';
 import { IConnector } from '@/interfaces/database/knowledge';
-import { DataSourceInfo } from '@/pages/user-setting/data-source/contant';
+import { useDataSourceInfo } from '@/pages/user-setting/data-source/contant';
 import { IDataSourceBase } from '@/pages/user-setting/data-source/interface';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { useEffect, useState } from 'react';
@@ -58,16 +58,24 @@ export default function DatasetSettings() {
       name: '',
       parser_id: DocumentParserType.Naive,
       permission: PermissionRole.Me,
+      language: 'English',
       parser_config: {
         layout_recognize: DocumentType.DeepDOC,
         chunk_token_num: 512,
         delimiter: `\n`,
+        enable_children: false,
+        children_delimiter: `\n`,
         auto_keywords: 0,
         auto_questions: 0,
         html4excel: false,
         topn_tags: 3,
         toc_extraction: false,
         overlapped_percent: 0,
+        // MinerU-specific defaults
+        mineru_parse_method: 'auto',
+        mineru_formula_enable: true,
+        mineru_table_enable: true,
+        mineru_lang: 'English',
         raptor: {
           use_raptor: true,
           max_token: 256,
@@ -89,6 +97,7 @@ export default function DatasetSettings() {
       connectors: [],
     },
   });
+  const { dataSourceInfo } = useDataSourceInfo();
   const knowledgeDetails = useFetchKnowledgeConfigurationOnMount(form);
   // const [pipelineData, setPipelineData] = useState<IDataPipelineNodeProps>();
   const [sourceData, setSourceData] = useState<IDataSourceNodeProps[]>();
@@ -113,7 +122,7 @@ export default function DatasetSettings() {
           return {
             ...connector,
             icon:
-              DataSourceInfo[connector.source as keyof typeof DataSourceInfo]
+              dataSourceInfo[connector.source as keyof typeof dataSourceInfo]
                 ?.icon || '',
           };
         });
@@ -159,7 +168,7 @@ export default function DatasetSettings() {
           ...connector,
           auto_parse: connector.auto_parse === '0' ? '0' : '1',
           icon:
-            DataSourceInfo[connector.source as keyof typeof DataSourceInfo]
+            dataSourceInfo[connector.source as keyof typeof dataSourceInfo]
               ?.icon || '',
         };
       });

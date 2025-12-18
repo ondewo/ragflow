@@ -51,6 +51,8 @@ export default {
       search: '搜索',
       noDataFound: '没有找到数据。',
       noData: '暂无数据',
+      bedrockCredentialsHint:
+        '提示：Access Key / Secret Key 可留空，以启用 AWS IAM 自动验证。',
       promptPlaceholder: '请输入或使用 / 快速插入变量。',
       selected: '已选择',
     },
@@ -101,6 +103,7 @@ export default {
       doc: '文档',
       searchKnowledgePlaceholder: '搜索',
       noMoreData: '没有更多数据了',
+      parserRequired: '分块方法必填',
     },
     knowledgeDetails: {
       localUpload: '本地上传',
@@ -264,6 +267,15 @@ export default {
       theDocumentBeingParsedCannotBeDeleted: '正在解析的文档不能被删除',
     },
     knowledgeConfiguration: {
+      mineruOptions: 'MinerU 选项',
+      mineruParseMethod: '解析方法',
+      mineruParseMethodTip:
+        'PDF 解析方法：auto（自动检测）、txt（文本提取）、ocr（光学字符识别）',
+      mineruFormulaEnable: '公式识别',
+      mineruFormulaEnableTip:
+        '启用公式识别。注意：对于西里尔文档可能无法正常工作。',
+      mineruTableEnable: '表格识别',
+      mineruTableEnableTip: '启用表格识别和提取。',
       generationScopeTip: '选择 RAPTOR 的生成范围：整个知识库或单个文件。',
       generationScope: '生成范围',
       scopeSingleFile: '单文件',
