@@ -16,7 +16,7 @@
 from typing import Any, Dict
 
 import pytest
-from common_utils import add_model, list_user_models
+from common import add_model, list_user_models
 from common.constants import RetCode
 from configs import INVALID_API_TOKEN
 from libs.auth import RAGFlowHttpApiAuth

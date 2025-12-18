@@ -16,7 +16,7 @@
 from typing import Any, Dict, List, Set
 
 import pytest
-from common_utils import add_model, get_default_models, list_user_models, remove_factory, set_default_models
+from common import add_model, get_default_models, list_user_models, remove_factory, set_default_models
 from common.constants import RetCode
 from configs import INVALID_API_TOKEN
 from libs.auth import RAGFlowHttpApiAuth
