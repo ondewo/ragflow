@@ -32,10 +32,16 @@ def generate_user_api_key(session: requests.Session, user_name: str) -> Dict[str
     """
     url: str = f"{ADMIN_HOST_ADDRESS}/api/{VERSION}/admin/users/{user_name}/new_token"
     response: requests.Response = session.post(url)
+
+    # Some error responses (e.g., 401) may return HTML instead of JSON.
     try:
         res_json: Dict[str, Any] = response.json()
-    except requests.exceptions.JSONDecodeError as e:
-        raise Exception(f"Failed to parse JSON response. Status: {response.status_code}, Response: {response.text[:200]}") from e
+    except requests.exceptions.JSONDecodeError:
+        return {
+            "code": response.status_code,
+            "message": response.text,
+            "data": None,
+        }
     return res_json
 
 
@@ -47,5 +53,13 @@ def get_user_api_key(session: requests.Session, username: str) -> Dict[str, Any]
     """
     url: str = f"{ADMIN_HOST_ADDRESS}/api/{VERSION}/admin/users/{username}/token_list"
     response: requests.Response = session.get(url)
-    res_json: Dict[str, Any] = response.json()
+    
+    try:
+        res_json: Dict[str, Any] = response.json()
+    except requests.exceptions.JSONDecodeError:
+        return {
+            "code": response.status_code,
+            "message": response.text,
+            "data": None,
+        }
     return res_json

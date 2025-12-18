@@ -22,6 +22,7 @@ VERSION = "v1"
 ZHIPU_AI_API_KEY = os.getenv("ZHIPU_AI_API_KEY")
 if ZHIPU_AI_API_KEY is None:
     pytest.exit("Error: Environment variable ZHIPU_AI_API_KEY must be set")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
 EMAIL = "qa@infiniflow.org"
 # password is "123"

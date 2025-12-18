@@ -99,14 +99,20 @@ async def set_default_models(tenant_id: str) -> Response:
             llm_factory: Optional[str]
             llm_name, llm_factory = TenantLLMService.split_model_name_and_factory(model_id)
 
-            # Check if model exists in user's configured models
-            model_exists: List[Any] = TenantLLMService.query(tenant_id=tenant_id, llm_name=llm_name, llm_factory=llm_factory, model_type=model_type)
-
-            # Builtin models are always allowed (no API key required)
             is_builtin: bool = llm_factory == "Builtin"
 
-            if not model_exists and not is_builtin:
-                return get_error_argument_result(f"Model '{model_id}' (type: {model_type}) is not configured. Please add the model first using POST /api/v1/models")
+            if is_builtin:
+                builtin_exists = LLMService.query(fid="Builtin", llm_name=llm_name, model_type=model_type)
+                if not builtin_exists:
+                    return get_error_argument_result(
+                        f"Model '{model_id}' (type: {model_type}) is not configured. Please add the model first using POST /api/v1/models"
+                    )
+            else:
+                model_exists: List[Any] = TenantLLMService.query(tenant_id=tenant_id, llm_name=llm_name, llm_factory=llm_factory, model_type=model_type)
+                if not model_exists:
+                    return get_error_argument_result(
+                        f"Model '{model_id}' (type: {model_type}) is not configured. Please add the model first using POST /api/v1/models"
+                    )
 
             update_data[field_name] = req[field_name]
 
@@ -277,6 +283,10 @@ async def add_model(tenant_id: str) -> Response:
     if not factory:
         return get_error_argument_result("llm_factory is required")
 
+    # Builtin should always be available and must not be added explicitly
+    if factory == "Builtin":
+        return get_error_argument_result("LLM factory Builtin is not allowed")
+
     if factory not in [f.name for f in get_allowed_llm_factories()]:
         return get_error_argument_result(f"LLM factory {factory} is not allowed")
 
@@ -410,6 +420,9 @@ async def remove_factory(tenant_id: str) -> Response:
 
     if not llm_factory:
         return get_error_argument_result("llm_factory is required")
+
+    if llm_factory == "Builtin":
+        return get_error_argument_result("LLM factory Builtin is not allowed")
 
     TenantLLMService.filter_delete(
         [
