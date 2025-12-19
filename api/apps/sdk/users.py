@@ -76,7 +76,7 @@ async def set_default_models(tenant_id: str) -> Response:
 
     # Prepare update data - only include fields that are provided
     update_data: Dict[str, str] = {}
-    model_type_mapping: Dict[str, Any] = {
+    model_type_mapping: Dict[str, LLMType] = {
         "llm_id": LLMType.CHAT,
         "embd_id": LLMType.EMBEDDING,
         "asr_id": LLMType.SPEECH2TEXT,

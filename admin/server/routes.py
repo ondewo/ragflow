@@ -376,15 +376,15 @@ def get_user_permission(user_name: str):
         return error_response(str(e), 500)
 
 
-@admin_bp.route("/users/<user_name>/new_token", methods=["POST"])
+@admin_bp.route("/users/<username>/new_token", methods=["POST"])
 @login_required
 @check_admin_auth
-def generate_user_api_key(user_name: str) -> tuple[Response, int]:
+def generate_user_api_key(username: str) -> tuple[Response, int]:
     try:
-        user_details: list[dict[str, Any]] = UserMgr.get_user_details(user_name)
+        user_details: list[dict[str, Any]] = UserMgr.get_user_details(username)
         if not user_details:
             return error_response("User not found!", 400)
-        tenants: list[dict[str, Any]] = UserServiceMgr.get_user_tenants(user_name)
+        tenants: list[dict[str, Any]] = UserServiceMgr.get_user_tenants(username)
         if not tenants:
             return error_response("Tenant not found!", 400)
         tenant_id: str = tenants[0]["tenant_id"]
