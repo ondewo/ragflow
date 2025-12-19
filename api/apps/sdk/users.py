@@ -228,17 +228,16 @@ async def list_user_models(tenant_id: str) -> Response:
             )
     else:
         res: Dict[str, Dict[str, Any]] = {}
-        tenant_llms: List[Any] = TenantLLMService.get_my_llms(tenant_id)
+        tenant_llms: List[Dict[str, Any]] = TenantLLMService.get_my_llms(tenant_id)
         for tenant_llm in tenant_llms:
-            tenant_llm_dict: Dict[str, Any] = tenant_llm.to_dict()
-            if tenant_llm_dict["llm_factory"] not in res:
-                res[tenant_llm_dict["llm_factory"]] = {"tags": tenant_llm_dict["tags"], "llm": []}
-            res[tenant_llm_dict["llm_factory"]]["llm"].append(
+            if tenant_llm["llm_factory"] not in res:
+                res[tenant_llm["llm_factory"]] = {"tags": tenant_llm["tags"], "llm": []}
+            res[tenant_llm["llm_factory"]]["llm"].append(
                 {
-                    "type": tenant_llm_dict["model_type"],
-                    "name": tenant_llm_dict["llm_name"],
-                    "used_token": tenant_llm_dict.get("used_tokens", 0),
-                    "status": tenant_llm_dict.get("status", "1"),
+                    "type": tenant_llm["model_type"],
+                    "name": tenant_llm["llm_name"],
+                    "used_token": tenant_llm.get("used_tokens", 0),
+                    "status": tenant_llm.get("status", "1"),
                 }
             )
 

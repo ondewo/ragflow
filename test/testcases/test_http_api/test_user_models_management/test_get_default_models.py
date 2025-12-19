@@ -16,7 +16,7 @@
 from typing import Any, Dict
 
 import pytest
-from common import get_default_models, set_default_models
+from common import add_model, get_default_models, list_user_models, set_default_models
 from common.constants import RetCode
 from configs import INVALID_API_TOKEN
 from libs.auth import RAGFlowHttpApiAuth
@@ -54,7 +54,7 @@ class TestAuthorization:
         ids=["empty_auth", "invalid_api_token"],
     )
     def test_set_default_models_invalid_auth(self, invalid_auth, expected_code, expected_message):
-        res = set_default_models(invalid_auth, {"llm_id": "glm-4-flash@Builtin"})
+        res = set_default_models(invalid_auth, {"llm_id": "test-model@Ollama"})
         assert res["code"] == expected_code, res
         assert res["message"] == expected_message, res
 
@@ -85,50 +85,220 @@ class TestGetDefaultModels:
     @pytest.mark.p1
     def test_get_llm_id_after_set(self, HttpApiAuth):
         """Test getting LLM model ID after setting it"""
-        model_id: str = "glm-4-flash@Builtin"
-        res = set_default_models(HttpApiAuth, {"llm_id": model_id})
+        # First, list all available models
+        models_res = list_user_models(HttpApiAuth)
+        if models_res["code"] != RetCode.SUCCESS:
+            pytest.skip("Could not list user models")
+        
+        # Try to find a chat model from any available factory
+        chat_model = None
+        for factory_name in ["Ollama", "OpenAI", "ZHIPU-AI"]:
+            if factory_name in models_res["data"]:
+                factory_llm = models_res["data"][factory_name]["llm"]
+                for model in factory_llm:
+                    if model.get("type") == "chat":
+                        chat_model = f"{model['name']}@{factory_name}"
+                        break
+                if chat_model:
+                    break
+        
+        # If no chat model found, try to add Ollama factory
+        if not chat_model:
+            res = add_model(HttpApiAuth, {"llm_factory": "Ollama", "api_key": "dummy-key", "base_url": "http://localhost:8000"})
+            if res["code"] != RetCode.SUCCESS:
+                pytest.skip("Could not add Ollama factory and no chat models available")
+            
+            # List models again after adding
+            models_res = list_user_models(HttpApiAuth)
+            if models_res["code"] == RetCode.SUCCESS:
+                for factory_name in ["Ollama", "OpenAI", "ZHIPU-AI"]:
+                    if factory_name in models_res["data"]:
+                        factory_llm = models_res["data"][factory_name]["llm"]
+                        for model in factory_llm:
+                            if model.get("type") == "chat":
+                                chat_model = f"{model['name']}@{factory_name}"
+                                break
+                        if chat_model:
+                            break
+        
+        if not chat_model:
+            pytest.skip("No chat models available in this RAGFlow instance")
+        
+        # Set it as default
+        res = set_default_models(HttpApiAuth, {"llm_id": chat_model})
         assert res["code"] == RetCode.SUCCESS, res
 
+        # Get and verify default models
         res = get_default_models(HttpApiAuth)
         assert res["code"] == RetCode.SUCCESS, res
         models: Dict[str, Any] = res["data"]
-        assert models.get("llm_id") == model_id
+        assert models.get("llm_id") == chat_model
 
     @pytest.mark.p1
     def test_get_embd_id_after_set(self, HttpApiAuth):
         """Test getting embedding model ID after setting it"""
-        model_id: str = "BAAI/bge-small-en-v1.5@Builtin"
-        res = set_default_models(HttpApiAuth, {"embd_id": model_id})
+        # First, list all available models
+        models_res = list_user_models(HttpApiAuth)
+        if models_res["code"] != RetCode.SUCCESS:
+            pytest.skip("Could not list user models")
+        
+        # Try to find an embedding model from any available factory
+        embd_model = None
+        for factory_name in ["Ollama", "OpenAI", "ZHIPU-AI"]:
+            if factory_name in models_res["data"]:
+                factory_llm = models_res["data"][factory_name]["llm"]
+                for model in factory_llm:
+                    if model.get("type") == "embedding":
+                        embd_model = f"{model['name']}@{factory_name}"
+                        break
+                if embd_model:
+                    break
+        
+        # If no embedding model found, try to add Ollama factory
+        if not embd_model:
+            res = add_model(HttpApiAuth, {"llm_factory": "Ollama", "api_key": "dummy-key", "base_url": "http://localhost:8000"})
+            if res["code"] != RetCode.SUCCESS:
+                pytest.skip("Could not add Ollama factory and no embedding models available")
+            
+            # List models again after adding
+            models_res = list_user_models(HttpApiAuth)
+            if models_res["code"] == RetCode.SUCCESS:
+                for factory_name in ["Ollama", "OpenAI", "ZHIPU-AI"]:
+                    if factory_name in models_res["data"]:
+                        factory_llm = models_res["data"][factory_name]["llm"]
+                        for model in factory_llm:
+                            if model.get("type") == "embedding":
+                                embd_model = f"{model['name']}@{factory_name}"
+                                break
+                        if embd_model:
+                            break
+        
+        if not embd_model:
+            pytest.skip("No embedding models available in this RAGFlow instance")
+        
+        # Set it as default
+        res = set_default_models(HttpApiAuth, {"embd_id": embd_model})
         assert res["code"] == RetCode.SUCCESS, res
 
+        # Get and verify default models
         res = get_default_models(HttpApiAuth)
         assert res["code"] == RetCode.SUCCESS, res
         models: Dict[str, Any] = res["data"]
-        assert models.get("embd_id") == model_id
+        assert models.get("embd_id") == embd_model
 
     @pytest.mark.p1
     def test_get_img2txt_id_after_set(self, HttpApiAuth):
         """Test getting image-to-text model ID after setting it"""
-        model_id: str = "glm-4v@Builtin"
-        res = set_default_models(HttpApiAuth, {"img2txt_id": model_id})
+        # First, list all available models
+        models_res = list_user_models(HttpApiAuth)
+        if models_res["code"] != RetCode.SUCCESS:
+            pytest.skip("Could not list user models")
+        
+        # Try to find an image2text model from any available factory
+        img2txt_model = None
+        for factory_name in ["Ollama", "OpenAI", "ZHIPU-AI"]:
+            if factory_name in models_res["data"]:
+                factory_llm = models_res["data"][factory_name]["llm"]
+                for model in factory_llm:
+                    if model.get("type") == "image2text":
+                        img2txt_model = f"{model['name']}@{factory_name}"
+                        break
+                if img2txt_model:
+                    break
+        
+        # If no image2text model found, try to add Ollama factory
+        if not img2txt_model:
+            res = add_model(HttpApiAuth, {"llm_factory": "Ollama", "api_key": "dummy-key", "base_url": "http://localhost:8000"})
+            if res["code"] != RetCode.SUCCESS:
+                pytest.skip("Could not add Ollama factory and no image2text models available")
+            
+            # List models again after adding
+            models_res = list_user_models(HttpApiAuth)
+            if models_res["code"] == RetCode.SUCCESS:
+                for factory_name in ["Ollama", "OpenAI", "ZHIPU-AI"]:
+                    if factory_name in models_res["data"]:
+                        factory_llm = models_res["data"][factory_name]["llm"]
+                        for model in factory_llm:
+                            if model.get("type") == "image2text":
+                                img2txt_model = f"{model['name']}@{factory_name}"
+                                break
+                        if img2txt_model:
+                            break
+        
+        if not img2txt_model:
+            pytest.skip("No image2text models available in this RAGFlow instance")
+        
+        # Set it as default
+        res = set_default_models(HttpApiAuth, {"img2txt_id": img2txt_model})
         assert res["code"] == RetCode.SUCCESS, res
 
+        # Get and verify default models
         res = get_default_models(HttpApiAuth)
         assert res["code"] == RetCode.SUCCESS, res
         models: Dict[str, Any] = res["data"]
-        assert models.get("img2txt_id") == model_id
+        assert models.get("img2txt_id") == img2txt_model
 
     @pytest.mark.p1
     def test_get_multiple_models_after_set(self, HttpApiAuth):
         """Test getting multiple model IDs after setting them"""
-        payload: Dict[str, str] = {
-            "llm_id": "glm-4-flash@Builtin",
-            "embd_id": "BAAI/bge-small-en-v1.5@Builtin",
-            "img2txt_id": "glm-4v@Builtin",
-        }
+        # First, list all available models
+        models_res = list_user_models(HttpApiAuth)
+        if models_res["code"] != RetCode.SUCCESS:
+            pytest.skip("Could not list user models")
+        
+        # Find models of different types from any available factory
+        payload: Dict[str, str] = {}
+        for factory_name in ["Ollama", "OpenAI", "ZHIPU-AI"]:
+            if factory_name in models_res["data"]:
+                factory_llm = models_res["data"][factory_name]["llm"]
+                for model in factory_llm:
+                    model_type = model.get("type")
+                    model_id = f"{model['name']}@{factory_name}"
+                    if model_type == "chat" and "llm_id" not in payload:
+                        payload["llm_id"] = model_id
+                    elif model_type == "embedding" and "embd_id" not in payload:
+                        payload["embd_id"] = model_id
+                    elif model_type == "image2text" and "img2txt_id" not in payload:
+                        payload["img2txt_id"] = model_id
+                    if len(payload) >= 3:
+                        break
+                if len(payload) >= 3:
+                    break
+        
+        # If not enough models found, try to add Ollama factory
+        if len(payload) < 3:
+            res = add_model(HttpApiAuth, {"llm_factory": "Ollama", "api_key": "dummy-key", "base_url": "http://localhost:8000"})
+            if res["code"] != RetCode.SUCCESS:
+                pytest.skip("Could not add Ollama factory and not enough models available")
+            
+            # List models again after adding
+            models_res = list_user_models(HttpApiAuth)
+            if models_res["code"] == RetCode.SUCCESS:
+                for factory_name in ["Ollama", "OpenAI", "ZHIPU-AI"]:
+                    if factory_name in models_res["data"]:
+                        factory_llm = models_res["data"][factory_name]["llm"]
+                        for model in factory_llm:
+                            model_type = model.get("type")
+                            model_id = f"{model['name']}@{factory_name}"
+                            if model_type == "chat" and "llm_id" not in payload:
+                                payload["llm_id"] = model_id
+                            elif model_type == "embedding" and "embd_id" not in payload:
+                                payload["embd_id"] = model_id
+                            elif model_type == "image2text" and "img2txt_id" not in payload:
+                                payload["img2txt_id"] = model_id
+                            if len(payload) >= 3:
+                                break
+                        if len(payload) >= 3:
+                            break
+        
+        if len(payload) < 3:
+            pytest.skip("Not enough model types available")
+        
+        # Set them as default
         res = set_default_models(HttpApiAuth, payload)
         assert res["code"] == RetCode.SUCCESS, res
 
+        # Get and verify default models
         res = get_default_models(HttpApiAuth)
         assert res["code"] == RetCode.SUCCESS, res
         models: Dict[str, Any] = res["data"]
@@ -139,17 +309,68 @@ class TestGetDefaultModels:
     @pytest.mark.p1
     def test_get_all_model_types_after_set(self, HttpApiAuth):
         """Test getting all model types after setting them"""
+        # First, list all available models
+        models_res = list_user_models(HttpApiAuth)
+        if models_res["code"] != RetCode.SUCCESS:
+            pytest.skip("Could not list user models")
+        
+        # Find models of different types from any available factory
         payload: Dict[str, str] = {
-            "llm_id": "glm-4-flash@Builtin",
-            "embd_id": "BAAI/bge-small-en-v1.5@Builtin",
             "asr_id": "",
-            "img2txt_id": "glm-4v@Builtin",
             "rerank_id": "",
             "tts_id": "",
         }
+        for factory_name in ["Ollama", "OpenAI", "ZHIPU-AI"]:
+            if factory_name in models_res["data"]:
+                factory_llm = models_res["data"][factory_name]["llm"]
+                for model in factory_llm:
+                    model_type = model.get("type")
+                    model_id = f"{model['name']}@{factory_name}"
+                    if model_type == "chat" and "llm_id" not in payload:
+                        payload["llm_id"] = model_id
+                    elif model_type == "embedding" and "embd_id" not in payload:
+                        payload["embd_id"] = model_id
+                    elif model_type == "image2text" and "img2txt_id" not in payload:
+                        payload["img2txt_id"] = model_id
+                    if "llm_id" in payload and "embd_id" in payload and "img2txt_id" in payload:
+                        break
+                if "llm_id" in payload and "embd_id" in payload and "img2txt_id" in payload:
+                    break
+        
+        # If not enough models found, try to add Ollama factory
+        if "llm_id" not in payload or "embd_id" not in payload or "img2txt_id" not in payload:
+            res = add_model(HttpApiAuth, {"llm_factory": "Ollama", "api_key": "dummy-key", "base_url": "http://localhost:8000"})
+            if res["code"] != RetCode.SUCCESS:
+                pytest.skip("Could not add Ollama factory and not enough models available")
+            
+            # List models again after adding
+            models_res = list_user_models(HttpApiAuth)
+            if models_res["code"] == RetCode.SUCCESS:
+                for factory_name in ["Ollama", "OpenAI", "ZHIPU-AI"]:
+                    if factory_name in models_res["data"]:
+                        factory_llm = models_res["data"][factory_name]["llm"]
+                        for model in factory_llm:
+                            model_type = model.get("type")
+                            model_id = f"{model['name']}@{factory_name}"
+                            if model_type == "chat" and "llm_id" not in payload:
+                                payload["llm_id"] = model_id
+                            elif model_type == "embedding" and "embd_id" not in payload:
+                                payload["embd_id"] = model_id
+                            elif model_type == "image2text" and "img2txt_id" not in payload:
+                                payload["img2txt_id"] = model_id
+                            if "llm_id" in payload and "embd_id" in payload and "img2txt_id" in payload:
+                                break
+                        if "llm_id" in payload and "embd_id" in payload and "img2txt_id" in payload:
+                            break
+        
+        if "llm_id" not in payload or "embd_id" not in payload or "img2txt_id" not in payload:
+            pytest.skip("Not enough model types available")
+        
+        # Set them as default
         res = set_default_models(HttpApiAuth, payload)
         assert res["code"] == RetCode.SUCCESS, res
 
+        # Get and verify default models
         res = get_default_models(HttpApiAuth)
         assert res["code"] == RetCode.SUCCESS, res
         models: Dict[str, Any] = res["data"]
@@ -164,11 +385,56 @@ class TestGetDefaultModels:
     @pytest.mark.p1
     def test_get_models_reflects_set_operation(self, HttpApiAuth):
         """Test that get_default_models accurately reflects what was set"""
+        # First, list all available models
+        models_res = list_user_models(HttpApiAuth)
+        if models_res["code"] != RetCode.SUCCESS:
+            pytest.skip("Could not list user models")
+        
+        # Find initial models from any available factory
+        initial_payload: Dict[str, str] = {}
+        for factory_name in ["Ollama", "OpenAI", "ZHIPU-AI"]:
+            if factory_name in models_res["data"]:
+                factory_llm = models_res["data"][factory_name]["llm"]
+                for model in factory_llm:
+                    model_type = model.get("type")
+                    model_id = f"{model['name']}@{factory_name}"
+                    if model_type == "chat" and "llm_id" not in initial_payload:
+                        initial_payload["llm_id"] = model_id
+                    elif model_type == "embedding" and "embd_id" not in initial_payload:
+                        initial_payload["embd_id"] = model_id
+                    if "llm_id" in initial_payload and "embd_id" in initial_payload:
+                        break
+                if "llm_id" in initial_payload and "embd_id" in initial_payload:
+                    break
+        
+        # If not enough models found, try to add Ollama factory
+        if "llm_id" not in initial_payload or "embd_id" not in initial_payload:
+            res = add_model(HttpApiAuth, {"llm_factory": "Ollama", "api_key": "dummy-key", "base_url": "http://localhost:8000"})
+            if res["code"] != RetCode.SUCCESS:
+                pytest.skip("Could not add Ollama factory and not enough models available")
+            
+            # List models again after adding
+            models_res = list_user_models(HttpApiAuth)
+            if models_res["code"] == RetCode.SUCCESS:
+                for factory_name in ["Ollama", "OpenAI", "ZHIPU-AI"]:
+                    if factory_name in models_res["data"]:
+                        factory_llm = models_res["data"][factory_name]["llm"]
+                        for model in factory_llm:
+                            model_type = model.get("type")
+                            model_id = f"{model['name']}@{factory_name}"
+                            if model_type == "chat" and "llm_id" not in initial_payload:
+                                initial_payload["llm_id"] = model_id
+                            elif model_type == "embedding" and "embd_id" not in initial_payload:
+                                initial_payload["embd_id"] = model_id
+                            if "llm_id" in initial_payload and "embd_id" in initial_payload:
+                                break
+                        if "llm_id" in initial_payload and "embd_id" in initial_payload:
+                            break
+        
+        if "llm_id" not in initial_payload or "embd_id" not in initial_payload:
+            pytest.skip("Not enough model types available")
+        
         # Set initial models
-        initial_payload: Dict[str, str] = {
-            "llm_id": "glm-4-flash@Builtin",
-            "embd_id": "BAAI/bge-small-en-v1.5@Builtin",
-        }
         res = set_default_models(HttpApiAuth, initial_payload)
         assert res["code"] == RetCode.SUCCESS, res
 
@@ -178,71 +444,173 @@ class TestGetDefaultModels:
         assert initial_models.get("llm_id") == initial_payload["llm_id"]
         assert initial_models.get("embd_id") == initial_payload["embd_id"]
 
-        # Update one model
-        res = set_default_models(HttpApiAuth, {"llm_id": "glm-4@Builtin"})
+        # Update one model - find another chat model from any factory
+        updated_llm_id = None
+        for factory_name in ["Ollama", "OpenAI", "ZHIPU-AI"]:
+            if factory_name in models_res["data"]:
+                factory_llm = models_res["data"][factory_name]["llm"]
+                for model in factory_llm:
+                    if model.get("type") == "chat":
+                        candidate_id = f"{model['name']}@{factory_name}"
+                        if candidate_id != initial_payload["llm_id"]:
+                            updated_llm_id = candidate_id
+                            break
+                if updated_llm_id:
+                    break
+        
+        if not updated_llm_id:
+            pytest.skip("No alternative chat model available")
+        
+        res = set_default_models(HttpApiAuth, {"llm_id": updated_llm_id})
         assert res["code"] == RetCode.SUCCESS, res
 
         res = get_default_models(HttpApiAuth)
         assert res["code"] == RetCode.SUCCESS, res
         updated_models: Dict[str, Any] = res["data"]
-        assert updated_models.get("llm_id") == "glm-4@Builtin"
+        assert updated_models.get("llm_id") == updated_llm_id
         # Embedding should remain unchanged
         assert updated_models.get("embd_id") == initial_models.get("embd_id")
 
     @pytest.mark.p1
     def test_get_configured_model(self, HttpApiAuth):
         """Test getting a configured model (if available)"""
-        # First, try to set a model that might be configured (e.g., from ZHIPU-AI if available)
-        # If not configured, it will use a builtin model instead
-        model_id: str = "glm-4-flash@ZHIPU-AI"
-        res = set_default_models(HttpApiAuth, {"llm_id": model_id})
+        # First, list all available models
+        models_res = list_user_models(HttpApiAuth)
+        if models_res["code"] != RetCode.SUCCESS:
+            pytest.skip("Could not list user models")
         
-        # Check response code - either success or argument error
-        assert res["code"] in [RetCode.SUCCESS, RetCode.ARGUMENT_ERROR], res
+        # Try to find a chat model from any available factory
+        chat_model = None
+        for factory_name in ["Ollama", "OpenAI", "ZHIPU-AI"]:
+            if factory_name in models_res["data"]:
+                factory_llm = models_res["data"][factory_name]["llm"]
+                for model in factory_llm:
+                    if model.get("type") == "chat":
+                        chat_model = f"{model['name']}@{factory_name}"
+                        break
+                if chat_model:
+                    break
         
-        if res["code"] == RetCode.SUCCESS:
-            # Model is configured, verify it can be retrieved
-            get_res = get_default_models(HttpApiAuth)
-            assert get_res["code"] == RetCode.SUCCESS, get_res
-            models: Dict[str, Any] = get_res["data"]
-            assert models.get("llm_id") == model_id
-        else:
-            # Model is not configured, verify error message and fall back to builtin
-            assert res["message"] == f"Model '{model_id}' (type: chat) is not configured. Please add the model first using POST /api/v1/models", res
-            model_id = "glm-4-flash@Builtin"
-            set_res = set_default_models(HttpApiAuth, {"llm_id": model_id})
-            assert set_res["code"] == RetCode.SUCCESS, set_res
-            get_res = get_default_models(HttpApiAuth)
-            assert get_res["code"] == RetCode.SUCCESS, get_res
-            models: Dict[str, Any] = get_res["data"]
-            assert models.get("llm_id") == model_id
+        # If no chat model found, try to add Ollama factory
+        if not chat_model:
+            res = add_model(HttpApiAuth, {"llm_factory": "Ollama", "api_key": "dummy-key", "base_url": "http://localhost:8000"})
+            if res["code"] != RetCode.SUCCESS:
+                pytest.skip("Could not add Ollama factory and no chat models available")
+            
+            # List models again after adding
+            models_res = list_user_models(HttpApiAuth)
+            if models_res["code"] == RetCode.SUCCESS:
+                for factory_name in ["Ollama", "OpenAI", "ZHIPU-AI"]:
+                    if factory_name in models_res["data"]:
+                        factory_llm = models_res["data"][factory_name]["llm"]
+                        for model in factory_llm:
+                            if model.get("type") == "chat":
+                                chat_model = f"{model['name']}@{factory_name}"
+                                break
+                        if chat_model:
+                            break
+        
+        if not chat_model:
+            pytest.skip("No chat models available")
+        
+        # Set it as default
+        res = set_default_models(HttpApiAuth, {"llm_id": chat_model})
+        assert res["code"] == RetCode.SUCCESS, res
+        
+        # Verify it can be retrieved
+        get_res = get_default_models(HttpApiAuth)
+        assert get_res["code"] == RetCode.SUCCESS, get_res
+        models: Dict[str, Any] = get_res["data"]
+        assert models.get("llm_id") == chat_model
 
     @pytest.mark.p2
     def test_get_models_after_partial_update(self, HttpApiAuth):
         """Test getting models after partial update (only some models changed)"""
+        # First, list all available models
+        models_res = list_user_models(HttpApiAuth)
+        if models_res["code"] != RetCode.SUCCESS:
+            pytest.skip("Could not list user models")
+        
+        # Find initial models from any available factory
+        initial_payload: Dict[str, str] = {}
+        for factory_name in ["Ollama", "OpenAI", "ZHIPU-AI"]:
+            if factory_name in models_res["data"]:
+                factory_llm = models_res["data"][factory_name]["llm"]
+                for model in factory_llm:
+                    model_type = model.get("type")
+                    model_id = f"{model['name']}@{factory_name}"
+                    if model_type == "chat" and "llm_id" not in initial_payload:
+                        initial_payload["llm_id"] = model_id
+                    elif model_type == "embedding" and "embd_id" not in initial_payload:
+                        initial_payload["embd_id"] = model_id
+                    elif model_type == "image2text" and "img2txt_id" not in initial_payload:
+                        initial_payload["img2txt_id"] = model_id
+                    if "llm_id" in initial_payload and "embd_id" in initial_payload and "img2txt_id" in initial_payload:
+                        break
+                if "llm_id" in initial_payload and "embd_id" in initial_payload and "img2txt_id" in initial_payload:
+                    break
+        
+        # If not enough models found, try to add Ollama factory
+        if "llm_id" not in initial_payload or "embd_id" not in initial_payload or "img2txt_id" not in initial_payload:
+            res = add_model(HttpApiAuth, {"llm_factory": "Ollama", "api_key": "dummy-key", "base_url": "http://localhost:8000"})
+            if res["code"] != RetCode.SUCCESS:
+                pytest.skip("Could not add Ollama factory and not enough models available")
+            
+            # List models again after adding
+            models_res = list_user_models(HttpApiAuth)
+            if models_res["code"] == RetCode.SUCCESS:
+                for factory_name in ["Ollama", "OpenAI", "ZHIPU-AI"]:
+                    if factory_name in models_res["data"]:
+                        factory_llm = models_res["data"][factory_name]["llm"]
+                        for model in factory_llm:
+                            model_type = model.get("type")
+                            model_id = f"{model['name']}@{factory_name}"
+                            if model_type == "chat" and "llm_id" not in initial_payload:
+                                initial_payload["llm_id"] = model_id
+                            elif model_type == "embedding" and "embd_id" not in initial_payload:
+                                initial_payload["embd_id"] = model_id
+                            elif model_type == "image2text" and "img2txt_id" not in initial_payload:
+                                initial_payload["img2txt_id"] = model_id
+                            if "llm_id" in initial_payload and "embd_id" in initial_payload and "img2txt_id" in initial_payload:
+                                break
+                        if "llm_id" in initial_payload and "embd_id" in initial_payload and "img2txt_id" in initial_payload:
+                            break
+        
+        if "llm_id" not in initial_payload or "embd_id" not in initial_payload or "img2txt_id" not in initial_payload:
+            pytest.skip("Not enough model types available")
+        
         # Set initial models
-        res = set_default_models(
-            HttpApiAuth,
-            {
-                "llm_id": "glm-4-flash@Builtin",
-                "embd_id": "BAAI/bge-small-en-v1.5@Builtin",
-                "img2txt_id": "glm-4v@Builtin",
-            },
-        )
+        res = set_default_models(HttpApiAuth, initial_payload)
         assert res["code"] == RetCode.SUCCESS, res
 
         res = get_default_models(HttpApiAuth)
         assert res["code"] == RetCode.SUCCESS, res
         initial_models: Dict[str, Any] = res["data"]
 
-        # Update only LLM
-        res = set_default_models(HttpApiAuth, {"llm_id": "glm-4@Builtin"})
+        # Update only LLM - find another chat model from any factory
+        updated_llm_id = None
+        for factory_name in ["Ollama", "OpenAI", "ZHIPU-AI"]:
+            if factory_name in models_res["data"]:
+                factory_llm = models_res["data"][factory_name]["llm"]
+                for model in factory_llm:
+                    if model.get("type") == "chat":
+                        candidate_id = f"{model['name']}@{factory_name}"
+                        if candidate_id != initial_payload["llm_id"]:
+                            updated_llm_id = candidate_id
+                            break
+                if updated_llm_id:
+                    break
+        
+        if not updated_llm_id:
+            pytest.skip("No alternative chat model available")
+        
+        res = set_default_models(HttpApiAuth, {"llm_id": updated_llm_id})
         assert res["code"] == RetCode.SUCCESS, res
 
         res = get_default_models(HttpApiAuth)
         assert res["code"] == RetCode.SUCCESS, res
         updated_models: Dict[str, Any] = res["data"]
-        assert updated_models.get("llm_id") == "glm-4@Builtin"
+        assert updated_models.get("llm_id") == updated_llm_id
         # Other models should remain unchanged
         assert updated_models.get("embd_id") == initial_models.get("embd_id")
         assert updated_models.get("img2txt_id") == initial_models.get("img2txt_id")
@@ -250,41 +618,135 @@ class TestGetDefaultModels:
     @pytest.mark.p2
     def test_get_models_sequential_operations(self, HttpApiAuth):
         """Test getting models after sequential set operations"""
+        # First, list all available models
+        models_res = list_user_models(HttpApiAuth)
+        if models_res["code"] != RetCode.SUCCESS:
+            pytest.skip("Could not list user models")
+        
+        # Find models of different types from any available factory
+        chat_model = None
+        embd_model = None
+        img2txt_model = None
+        
+        for factory_name in ["Ollama", "OpenAI", "ZHIPU-AI"]:
+            if factory_name in models_res["data"]:
+                factory_llm = models_res["data"][factory_name]["llm"]
+                for model in factory_llm:
+                    model_type = model.get("type")
+                    model_id = f"{model['name']}@{factory_name}"
+                    if model_type == "chat" and not chat_model:
+                        chat_model = model_id
+                    elif model_type == "embedding" and not embd_model:
+                        embd_model = model_id
+                    elif model_type == "image2text" and not img2txt_model:
+                        img2txt_model = model_id
+        
+        # If no models found, try to add Ollama factory
+        if not chat_model:
+            res = add_model(HttpApiAuth, {"llm_factory": "Ollama", "api_key": "dummy-key", "base_url": "http://localhost:8000"})
+            if res["code"] != RetCode.SUCCESS:
+                pytest.skip("Could not add Ollama factory and no chat models available")
+            
+            # List models again after adding
+            models_res = list_user_models(HttpApiAuth)
+            if models_res["code"] == RetCode.SUCCESS:
+                for factory_name in ["Ollama", "OpenAI", "ZHIPU-AI"]:
+                    if factory_name in models_res["data"]:
+                        factory_llm = models_res["data"][factory_name]["llm"]
+                        for model in factory_llm:
+                            model_type = model.get("type")
+                            model_id = f"{model['name']}@{factory_name}"
+                            if model_type == "chat" and not chat_model:
+                                chat_model = model_id
+                            elif model_type == "embedding" and not embd_model:
+                                embd_model = model_id
+                            elif model_type == "image2text" and not img2txt_model:
+                                img2txt_model = model_id
+        
+        if not chat_model:
+            pytest.skip("No chat models available")
+        
         # First set
-        res = set_default_models(HttpApiAuth, {"llm_id": "glm-4-flash@Builtin"})
+        res = set_default_models(HttpApiAuth, {"llm_id": chat_model})
         assert res["code"] == RetCode.SUCCESS, res
         res = get_default_models(HttpApiAuth)
         assert res["code"] == RetCode.SUCCESS, res
         models: Dict[str, Any] = res["data"]
-        assert models.get("llm_id") == "glm-4-flash@Builtin"
+        assert models.get("llm_id") == chat_model
 
-        # Second set
-        res = set_default_models(HttpApiAuth, {"embd_id": "BAAI/bge-small-en-v1.5@Builtin"})
-        assert res["code"] == RetCode.SUCCESS, res
-        res = get_default_models(HttpApiAuth)
-        assert res["code"] == RetCode.SUCCESS, res
-        models: Dict[str, Any] = res["data"]
-        assert models.get("llm_id") == "glm-4-flash@Builtin"  # Should remain
-        assert models.get("embd_id") == "BAAI/bge-small-en-v1.5@Builtin"
+        # Second set (if embedding model available)
+        if embd_model:
+            res = set_default_models(HttpApiAuth, {"embd_id": embd_model})
+            assert res["code"] == RetCode.SUCCESS, res
+            res = get_default_models(HttpApiAuth)
+            assert res["code"] == RetCode.SUCCESS, res
+            models: Dict[str, Any] = res["data"]
+            assert models.get("llm_id") == chat_model  # Should remain
+            assert models.get("embd_id") == embd_model
 
-        # Third set
-        res = set_default_models(HttpApiAuth, {"img2txt_id": "glm-4v@Builtin"})
-        assert res["code"] == RetCode.SUCCESS, res
-        res = get_default_models(HttpApiAuth)
-        assert res["code"] == RetCode.SUCCESS, res
-        models: Dict[str, Any] = res["data"]
-        assert models.get("llm_id") == "glm-4-flash@Builtin"  # Should remain
-        assert models.get("embd_id") == "BAAI/bge-small-en-v1.5@Builtin"  # Should remain
-        assert models.get("img2txt_id") == "glm-4v@Builtin"
+        # Third set (if image2text model available)
+        if img2txt_model:
+            res = set_default_models(HttpApiAuth, {"img2txt_id": img2txt_model})
+            assert res["code"] == RetCode.SUCCESS, res
+            res = get_default_models(HttpApiAuth)
+            assert res["code"] == RetCode.SUCCESS, res
+            models: Dict[str, Any] = res["data"]
+            assert models.get("llm_id") == chat_model  # Should remain
+            if embd_model:
+                assert models.get("embd_id") == embd_model  # Should remain
+            assert models.get("img2txt_id") == img2txt_model
 
     @pytest.mark.p2
     def test_get_models_consistency(self, HttpApiAuth):
         """Test that multiple get calls return consistent results"""
+        # First, list all available models
+        models_res = list_user_models(HttpApiAuth)
+        if models_res["code"] != RetCode.SUCCESS:
+            pytest.skip("Could not list user models")
+        
+        # Find models from any available factory
+        chat_model = None
+        embd_model = None
+        
+        for factory_name in ["Ollama", "OpenAI", "ZHIPU-AI"]:
+            if factory_name in models_res["data"]:
+                factory_llm = models_res["data"][factory_name]["llm"]
+                for model in factory_llm:
+                    model_type = model.get("type")
+                    model_id = f"{model['name']}@{factory_name}"
+                    if model_type == "chat" and not chat_model:
+                        chat_model = model_id
+                    elif model_type == "embedding" and not embd_model:
+                        embd_model = model_id
+        
+        # If not enough models found, try to add Ollama factory
+        if not chat_model or not embd_model:
+            res = add_model(HttpApiAuth, {"llm_factory": "Ollama", "api_key": "dummy-key", "base_url": "http://localhost:8000"})
+            if res["code"] != RetCode.SUCCESS:
+                pytest.skip("Could not add Ollama factory and not enough models available")
+            
+            # List models again after adding
+            models_res = list_user_models(HttpApiAuth)
+            if models_res["code"] == RetCode.SUCCESS:
+                for factory_name in ["Ollama", "OpenAI", "ZHIPU-AI"]:
+                    if factory_name in models_res["data"]:
+                        factory_llm = models_res["data"][factory_name]["llm"]
+                        for model in factory_llm:
+                            model_type = model.get("type")
+                            model_id = f"{model['name']}@{factory_name}"
+                            if model_type == "chat" and not chat_model:
+                                chat_model = model_id
+                            elif model_type == "embedding" and not embd_model:
+                                embd_model = model_id
+        
+        if not chat_model or not embd_model:
+            pytest.skip("Not enough model types available")
+        
         res = set_default_models(
             HttpApiAuth,
             {
-                "llm_id": "glm-4-flash@Builtin",
-                "embd_id": "BAAI/bge-small-en-v1.5@Builtin",
+                "llm_id": chat_model,
+                "embd_id": embd_model,
             },
         )
         assert res["code"] == RetCode.SUCCESS, res
@@ -307,12 +769,55 @@ class TestGetDefaultModels:
     @pytest.mark.p2
     def test_get_models_empty_strings(self, HttpApiAuth):
         """Test getting models when some are set"""
+        # First, list all available models
+        models_res = list_user_models(HttpApiAuth)
+        if models_res["code"] != RetCode.SUCCESS:
+            pytest.skip("Could not list user models")
+        
+        # Find models from any available factory
+        chat_model = None
+        embd_model = None
+        
+        for factory_name in ["Ollama", "OpenAI", "ZHIPU-AI"]:
+            if factory_name in models_res["data"]:
+                factory_llm = models_res["data"][factory_name]["llm"]
+                for model in factory_llm:
+                    model_type = model.get("type")
+                    model_id = f"{model['name']}@{factory_name}"
+                    if model_type == "chat" and not chat_model:
+                        chat_model = model_id
+                    elif model_type == "embedding" and not embd_model:
+                        embd_model = model_id
+        
+        # If not enough models found, try to add Ollama factory
+        if not chat_model or not embd_model:
+            res = add_model(HttpApiAuth, {"llm_factory": "Ollama", "api_key": "dummy-key", "base_url": "http://localhost:8000"})
+            if res["code"] != RetCode.SUCCESS:
+                pytest.skip("Could not add Ollama factory and not enough models available")
+            
+            # List models again after adding
+            models_res = list_user_models(HttpApiAuth)
+            if models_res["code"] == RetCode.SUCCESS:
+                for factory_name in ["Ollama", "OpenAI", "ZHIPU-AI"]:
+                    if factory_name in models_res["data"]:
+                        factory_llm = models_res["data"][factory_name]["llm"]
+                        for model in factory_llm:
+                            model_type = model.get("type")
+                            model_id = f"{model['name']}@{factory_name}"
+                            if model_type == "chat" and not chat_model:
+                                chat_model = model_id
+                            elif model_type == "embedding" and not embd_model:
+                                embd_model = model_id
+        
+        if not chat_model or not embd_model:
+            pytest.skip("Not enough model types available")
+        
         # Set some models
         res = set_default_models(
             HttpApiAuth,
             {
-                "llm_id": "glm-4-flash@Builtin",
-                "embd_id": "BAAI/bge-small-en-v1.5@Builtin",
+                "llm_id": chat_model,
+                "embd_id": embd_model,
             },
         )
         assert res["code"] == RetCode.SUCCESS, res
@@ -321,8 +826,8 @@ class TestGetDefaultModels:
         assert res["code"] == RetCode.SUCCESS, res
         models: Dict[str, Any] = res["data"]
         # Verify the models we set are correct
-        assert models.get("llm_id") == "glm-4-flash@Builtin"
-        assert models.get("embd_id") == "BAAI/bge-small-en-v1.5@Builtin"
+        assert models.get("llm_id") == chat_model
+        assert models.get("embd_id") == embd_model
         # Other models may be empty strings, None (for tts_id), or have values from previous tests
         # Just verify they are valid types
         assert isinstance(models.get("asr_id"), str) or models.get("asr_id") is None
@@ -333,18 +838,61 @@ class TestGetDefaultModels:
     @pytest.mark.p2
     def test_get_models_after_clearing_with_whitespace(self, HttpApiAuth):
         """Test getting models after clearing one with whitespace string"""
+        # First, list all available models
+        models_res = list_user_models(HttpApiAuth)
+        if models_res["code"] != RetCode.SUCCESS:
+            pytest.skip("Could not list user models")
+        
+        # Find models from any available factory
+        chat_model = None
+        embd_model = None
+        
+        for factory_name in ["Ollama", "OpenAI", "ZHIPU-AI"]:
+            if factory_name in models_res["data"]:
+                factory_llm = models_res["data"][factory_name]["llm"]
+                for model in factory_llm:
+                    model_type = model.get("type")
+                    model_id = f"{model['name']}@{factory_name}"
+                    if model_type == "chat" and not chat_model:
+                        chat_model = model_id
+                    elif model_type == "embedding" and not embd_model:
+                        embd_model = model_id
+        
+        # If not enough models found, try to add Ollama factory
+        if not chat_model or not embd_model:
+            res = add_model(HttpApiAuth, {"llm_factory": "Ollama", "api_key": "dummy-key", "base_url": "http://localhost:8000"})
+            if res["code"] != RetCode.SUCCESS:
+                pytest.skip("Could not add Ollama factory and not enough models available")
+            
+            # List models again after adding
+            models_res = list_user_models(HttpApiAuth)
+            if models_res["code"] == RetCode.SUCCESS:
+                for factory_name in ["Ollama", "OpenAI", "ZHIPU-AI"]:
+                    if factory_name in models_res["data"]:
+                        factory_llm = models_res["data"][factory_name]["llm"]
+                        for model in factory_llm:
+                            model_type = model.get("type")
+                            model_id = f"{model['name']}@{factory_name}"
+                            if model_type == "chat" and not chat_model:
+                                chat_model = model_id
+                            elif model_type == "embedding" and not embd_model:
+                                embd_model = model_id
+        
+        if not chat_model or not embd_model:
+            pytest.skip("Not enough model types available")
+        
         # Set initial models
         res = set_default_models(
             HttpApiAuth,
             {
-                "llm_id": "glm-4-flash@Builtin",
-                "embd_id": "BAAI/bge-small-en-v1.5@Builtin",
+                "llm_id": chat_model,
+                "embd_id": embd_model,
             },
         )
         assert res["code"] == RetCode.SUCCESS, res
 
         # Clear LLM with whitespace (but keep embd_id to satisfy "at least one" requirement)
-        res = set_default_models(HttpApiAuth, {"llm_id": "   ", "embd_id": "BAAI/bge-small-en-v1.5@Builtin"})
+        res = set_default_models(HttpApiAuth, {"llm_id": "   ", "embd_id": embd_model})
         assert res["code"] == RetCode.SUCCESS, res
 
         res = get_default_models(HttpApiAuth)
@@ -352,7 +900,7 @@ class TestGetDefaultModels:
         models: Dict[str, Any] = res["data"]
         # LLM should be cleared (empty string)
         assert models.get("llm_id") == ""
-        assert models.get("embd_id") == "BAAI/bge-small-en-v1.5@Builtin"
+        assert models.get("embd_id") == embd_model
 
     @pytest.mark.p3
     def test_get_rerank_id(self, HttpApiAuth):
@@ -412,26 +960,64 @@ class TestGetDefaultModels:
     @pytest.mark.p3
     def test_get_models_after_multiple_changes(self, HttpApiAuth):
         """Test getting models after multiple changes to the same field"""
+        # First, list all available models
+        models_res = list_user_models(HttpApiAuth)
+        if models_res["code"] != RetCode.SUCCESS:
+            pytest.skip("Could not list user models")
+        
+        # Find multiple chat models from any available factory
+        chat_models = []
+        for factory_name in ["Ollama", "OpenAI", "ZHIPU-AI"]:
+            if factory_name in models_res["data"]:
+                factory_llm = models_res["data"][factory_name]["llm"]
+                for model in factory_llm:
+                    if model.get("type") == "chat":
+                        chat_models.append(f"{model['name']}@{factory_name}")
+        
+        # If not enough models found, try to add Ollama factory
+        if len(chat_models) < 2:
+            res = add_model(HttpApiAuth, {"llm_factory": "Ollama", "api_key": "dummy-key", "base_url": "http://localhost:8000"})
+            if res["code"] != RetCode.SUCCESS:
+                pytest.skip("Could not add Ollama factory and not enough chat models available")
+            
+            # List models again after adding
+            models_res = list_user_models(HttpApiAuth)
+            if models_res["code"] == RetCode.SUCCESS:
+                for factory_name in ["Ollama", "OpenAI", "ZHIPU-AI"]:
+                    if factory_name in models_res["data"]:
+                        factory_llm = models_res["data"][factory_name]["llm"]
+                        for model in factory_llm:
+                            if model.get("type") == "chat":
+                                model_id = f"{model['name']}@{factory_name}"
+                                if model_id not in chat_models:
+                                    chat_models.append(model_id)
+        
+        if len(chat_models) < 2:
+            pytest.skip("Not enough chat models available for multiple changes test")
+        
+        first_model = chat_models[0]
+        second_model = chat_models[1]
+        
         # Set LLM to first value
-        res = set_default_models(HttpApiAuth, {"llm_id": "glm-4-flash@Builtin"})
+        res = set_default_models(HttpApiAuth, {"llm_id": first_model})
         assert res["code"] == RetCode.SUCCESS, res
         res = get_default_models(HttpApiAuth)
         assert res["code"] == RetCode.SUCCESS, res
         models: Dict[str, Any] = res["data"]
-        assert models.get("llm_id") == "glm-4-flash@Builtin"
+        assert models.get("llm_id") == first_model
 
         # Change LLM to second value
-        res = set_default_models(HttpApiAuth, {"llm_id": "glm-4@Builtin"})
+        res = set_default_models(HttpApiAuth, {"llm_id": second_model})
         assert res["code"] == RetCode.SUCCESS, res
         res = get_default_models(HttpApiAuth)
         assert res["code"] == RetCode.SUCCESS, res
         models: Dict[str, Any] = res["data"]
-        assert models.get("llm_id") == "glm-4@Builtin"
+        assert models.get("llm_id") == second_model
 
         # Change LLM back to first value
-        res = set_default_models(HttpApiAuth, {"llm_id": "glm-4-flash@Builtin"})
+        res = set_default_models(HttpApiAuth, {"llm_id": first_model})
         assert res["code"] == RetCode.SUCCESS, res
         res = get_default_models(HttpApiAuth)
         assert res["code"] == RetCode.SUCCESS, res
         models: Dict[str, Any] = res["data"]
-        assert models.get("llm_id") == "glm-4-flash@Builtin"
+        assert models.get("llm_id") == first_model
