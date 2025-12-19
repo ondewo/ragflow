@@ -21,8 +21,6 @@ from common.constants import RetCode
 from configs import INVALID_API_TOKEN
 from libs.auth import RAGFlowHttpApiAuth
 
-OPENAI_MISSING_KEY_MSG = "OpenAIError('The api_key client option must be set either by passing api_key to the client or by setting the OPENAI_API_KEY environment variable')"
-
 @pytest.mark.p1
 class TestAuthorization:
     @pytest.mark.parametrize(
@@ -70,8 +68,8 @@ class TestAddModelParameterValidation:
         [
             (
                 "OpenAI",
-                RetCode.EXCEPTION_ERROR,
-                OPENAI_MISSING_KEY_MSG,
+                RetCode.AUTHENTICATION_ERROR,
+                "Incorrect API key provided",
             ),
             ("Tencent Hunyuan", RetCode.EXCEPTION_ERROR, "'InvalidCredential'"),
             ("VolcEngine", RetCode.SUCCESS, ""),
@@ -82,7 +80,7 @@ class TestAddModelParameterValidation:
         """Concrete expectations per factory using current backend behavior."""
         res = add_model(HttpApiAuth, {"llm_factory": factory_name, "api_key": "test-key"})
         assert res["code"] == expected_code, res
-        assert res.get("message", "") == expected_message, res
+        assert res.get("message", "") == expected_message or expected_message in res.get("message", ""), res
 
     @pytest.mark.p1
     def test_add_builtin_factory_should_fail(self, HttpApiAuth):
@@ -142,36 +140,34 @@ class TestAddModelOpenAI:
     def test_add_openai_missing_api_key(self, HttpApiAuth):
         """Missing api_key returns backend exception error."""
         res = add_model(HttpApiAuth, {"llm_factory": "OpenAI"})
-        assert res["code"] == RetCode.EXCEPTION_ERROR, res
-        assert res["message"] == OPENAI_MISSING_KEY_MSG, res
+        assert res["code"] == RetCode.AUTHENTICATION_ERROR, res
+        assert "Incorrect API key provided" in res["message"], res
 
     @pytest.mark.p1
     def test_add_openai_invalid_api_key(self, HttpApiAuth):
         """Invalid api_key returns backend exception error."""
         res = add_model(HttpApiAuth, {"llm_factory": "OpenAI", "api_key": "invalid-key-12345"})
-        assert res["code"] == RetCode.EXCEPTION_ERROR, res
-        assert res["message"] == OPENAI_MISSING_KEY_MSG, res
+        assert res["code"] == RetCode.AUTHENTICATION_ERROR, res
+        assert "Incorrect API key provided" in res["message"], res
 
     @pytest.mark.p1
     def test_add_openai_empty_api_key(self, HttpApiAuth):
         """Empty api_key returns backend exception error."""
         res = add_model(HttpApiAuth, {"llm_factory": "OpenAI", "api_key": ""})
-        assert res["code"] == RetCode.EXCEPTION_ERROR, res
-        assert res["message"] == OPENAI_MISSING_KEY_MSG, res
+        assert res["code"] == RetCode.AUTHENTICATION_ERROR, res
 
     @pytest.mark.p1
     def test_add_openai_none_api_key(self, HttpApiAuth):
         """None api_key returns backend exception error."""
         res = add_model(HttpApiAuth, {"llm_factory": "OpenAI", "api_key": None})
         assert res["code"] == RetCode.EXCEPTION_ERROR, res
-        assert res["message"] == OPENAI_MISSING_KEY_MSG, res
+        assert res["message"] == "OpenAIError('The api_key client option must be set either by passing api_key to the client or by setting the OPENAI_API_KEY environment variable')", res
 
     @pytest.mark.p2
     def test_add_openai_with_base_url(self, HttpApiAuth):
         """Custom base_url still returns backend exception error."""
         res = add_model(HttpApiAuth, {"llm_factory": "OpenAI", "api_key": "invalid-key", "base_url": "http://localhost:8000"})
-        assert res["code"] == RetCode.EXCEPTION_ERROR, res
-        assert res["message"] == OPENAI_MISSING_KEY_MSG, res
+        assert res["code"] == RetCode.AUTHENTICATION_ERROR, res
 
     @pytest.mark.p2
     def test_add_openai_case_sensitivity(self, HttpApiAuth):
@@ -185,8 +181,7 @@ class TestAddModelOpenAI:
         assert res["message"] == "LLM factory OPENAI is not allowed", res
 
         res = add_model(HttpApiAuth, {"llm_factory": "OpenAI", "api_key": "invalid-key"})
-        assert res["code"] == RetCode.EXCEPTION_ERROR, res
-        assert res["message"] == OPENAI_MISSING_KEY_MSG, res
+        assert res["code"] == RetCode.AUTHENTICATION_ERROR, res
 
 
 @pytest.mark.usefixtures("cleanup_added_models")

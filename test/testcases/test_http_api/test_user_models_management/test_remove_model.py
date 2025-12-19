@@ -144,7 +144,7 @@ class TestRemoveFactoryConfigured:
         res = add_model(HttpApiAuth, {"llm_factory": "Ollama", "api_key": "dummy-key", "base_url": "http://localhost:8000"})
         if res["code"] != RetCode.SUCCESS:
             pytest.skip("Could not add Ollama factory")
-
+        
         res = remove_factory(HttpApiAuth, {"llm_factory": "Ollama"})
         assert res["code"] == RetCode.SUCCESS, res
         assert res.get("message", "") == "", res
@@ -155,7 +155,7 @@ class TestRemoveFactoryConfigured:
         res = add_model(HttpApiAuth, {"llm_factory": "Ollama", "api_key": "dummy-key", "base_url": "http://localhost:8000"})
         if res["code"] != RetCode.SUCCESS:
             pytest.skip("Could not add Ollama factory")
-
+        
         res = remove_factory(HttpApiAuth, {"llm_factory": "Ollama"})
         assert res["code"] == RetCode.SUCCESS, res
         assert res.get("message", "") == "", res
@@ -167,7 +167,7 @@ class TestRemoveFactoryConfigured:
         res = add_model(HttpApiAuth, {"llm_factory": "Ollama", "api_key": "dummy-key", "base_url": "http://localhost:8000"})
         if res["code"] != RetCode.SUCCESS:
             pytest.skip("Could not add Ollama factory")
-
+        
         # Backend currently does not persist models for Ollama; just ensure removal succeeds
         res = remove_factory(HttpApiAuth, {"llm_factory": "Ollama"})
         assert res["code"] == RetCode.SUCCESS, res
