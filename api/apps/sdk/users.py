@@ -77,10 +77,10 @@ async def set_default_models(tenant_id: str) -> Response:
     # Prepare update data - only include fields that are provided
     update_data: Dict[str, str] = {}
     model_type_mapping: Dict[str, Any] = {
-        "llm_id": LLMType.CHAT.value,
-        "embd_id": LLMType.EMBEDDING.value,
-        "asr_id": LLMType.SPEECH2TEXT.value,
-        "img2txt_id": LLMType.IMAGE2TEXT.value,
+        "llm_id": LLMType.CHAT,
+        "embd_id": LLMType.EMBEDDING,
+        "asr_id": LLMType.SPEECH2TEXT,
+        "img2txt_id": LLMType.IMAGE2TEXT,
         "rerank_id": LLMType.RERANK,
         "tts_id": LLMType.TTS,
     }
@@ -90,7 +90,7 @@ async def set_default_models(tenant_id: str) -> Response:
         if field_name in req and req[field_name]:
             model_id: str = req[field_name]
             # Skip validation for empty strings
-            if not model_id or model_id.strip() == "":
+            if model_id.strip() == "":
                 update_data[field_name] = ""
                 continue
 
@@ -99,9 +99,8 @@ async def set_default_models(tenant_id: str) -> Response:
             llm_factory: Optional[str]
             llm_name, llm_factory = TenantLLMService.split_model_name_and_factory(model_id)
 
-            is_builtin: bool = llm_factory == "Builtin"
 
-            if is_builtin:
+            if llm_factory == "Builtin":
                 builtin_exists = LLMService.query(fid="Builtin", llm_name=llm_name, model_type=model_type)
                 if not builtin_exists:
                     return get_error_argument_result(
@@ -203,36 +202,45 @@ async def list_user_models(tenant_id: str) -> Response:
 
     if include_details:
         res: Dict[str, Dict[str, Any]] = {}
-        objs: List[Any] = TenantLLMService.query(tenant_id=tenant_id)
+        tenant_llms: List[Any] = TenantLLMService.query(tenant_id=tenant_id)
         factories: List[Any] = LLMFactoriesService.query(status=StatusEnum.VALID.value)
 
-        for o in objs:
-            o_dict: Dict[str, Any] = o.to_dict()
+        for tenant_llm in tenant_llms:
+            tenant_llm_dict: Dict[str, Any] = tenant_llm.to_dict()
             factory_tags: Optional[Any] = None
-            for f in factories:
-                if f.name == o_dict["llm_factory"]:
-                    factory_tags = f.tags
+            for factory in factories:
+                if factory.name == tenant_llm_dict["llm_factory"]:
+                    factory_tags = factory.tags
                     break
 
-            if o_dict["llm_factory"] not in res:
-                res[o_dict["llm_factory"]] = {"tags": factory_tags, "llm": []}
+            if tenant_llm_dict["llm_factory"] not in res:
+                res[tenant_llm_dict["llm_factory"]] = {"tags": factory_tags, "llm": []}
 
-            res[o_dict["llm_factory"]]["llm"].append(
+            res[tenant_llm_dict["llm_factory"]]["llm"].append(
                 {
-                    "type": o_dict["model_type"],
-                    "name": o_dict["llm_name"],
-                    "used_token": o_dict.get("used_tokens", 0),
-                    "api_base": o_dict.get("api_base") or "",
-                    "max_tokens": o_dict.get("max_tokens") or 8192,
-                    "status": o_dict.get("status") or "1",
+                    "type": tenant_llm_dict["model_type"],
+                    "name": tenant_llm_dict["llm_name"],
+                    "used_token": tenant_llm_dict.get("used_tokens", 0),
+                    "api_base": tenant_llm_dict.get("api_base") or "",
+                    "max_tokens": tenant_llm_dict.get("max_tokens") or 8192,
+                    "status": tenant_llm_dict.get("status") or "1",
                 }
             )
     else:
         res: Dict[str, Dict[str, Any]] = {}
-        for o in TenantLLMService.get_my_llms(tenant_id):
-            if o["llm_factory"] not in res:
-                res[o["llm_factory"]] = {"tags": o["tags"], "llm": []}
-            res[o["llm_factory"]]["llm"].append({"type": o["model_type"], "name": o["llm_name"], "used_token": o.get("used_tokens", 0), "status": o.get("status", "1")})
+        tenant_llms: List[Any] = TenantLLMService.get_my_llms(tenant_id)
+        for tenant_llm in tenant_llms:
+            tenant_llm_dict: Dict[str, Any] = tenant_llm.to_dict()
+            if tenant_llm_dict["llm_factory"] not in res:
+                res[tenant_llm_dict["llm_factory"]] = {"tags": tenant_llm_dict["tags"], "llm": []}
+            res[tenant_llm_dict["llm_factory"]]["llm"].append(
+                {
+                    "type": tenant_llm_dict["model_type"],
+                    "name": tenant_llm_dict["llm_name"],
+                    "used_token": tenant_llm_dict.get("used_tokens", 0),
+                    "status": tenant_llm_dict.get("status", "1"),
+                }
+            )
 
     return get_result(data=res)
 
@@ -337,7 +345,7 @@ async def add_model(tenant_id: str) -> Response:
                     embd_passed = True
                 except Exception as e:
                     msg += f"\nFail to access embedding model({llm.llm_name}) using this api key." + str(e)
-            elif not chat_passed and llm.model_type == LLMType.CHAT.value:
+            elif not chat_passed and llm.model_type == LLMType.CHAT:
                 assert factory in ChatModel, f"Chat model from {factory} is not supported yet."
                 mdl = ChatModel[factory](api_key, llm.llm_name, base_url=base_url, **extra)
                 try:

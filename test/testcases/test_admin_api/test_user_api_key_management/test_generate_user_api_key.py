@@ -18,6 +18,7 @@ from typing import Any, Dict, List
 
 import pytest
 import requests
+from common.constants import RetCode
 from common import generate_user_api_key, get_user_api_key
 from configs import EMAIL
 
@@ -33,7 +34,7 @@ class TestGenerateUserApiKey:
         response: Dict[str, Any] = generate_user_api_key(admin_session, user_name)
 
         # Verify response code, message, and data
-        assert response.get("code") == 0, f"Response code should be 0, got {response.get('code')}"
+        assert response.get("code") == RetCode.SUCCESS, f"Response code should be {RetCode.SUCCESS}, got {response.get('code')}"
         assert "message" in response, "Response should contain message"
         assert "data" in response, "Response should contain data"
         assert response.get("data") is not None, "API key generation should return data"
@@ -68,13 +69,13 @@ class TestGenerateUserApiKey:
 
         # Generate API key
         generate_response: Dict[str, Any] = generate_user_api_key(admin_session, user_name)
-        assert generate_response.get("code") == 0, f"Generate should succeed, got code {generate_response.get('code')}"
+        assert generate_response.get("code") == RetCode.SUCCESS, f"Generate should succeed, got code {generate_response.get('code')}"
         generated_key: Dict[str, Any] = generate_response["data"]
         token: str = generated_key["token"]
 
         # Get all API keys for the user
         get_response: Dict[str, Any] = get_user_api_key(admin_session, user_name)
-        assert get_response.get("code") == 0, f"Get should succeed, got code {get_response.get('code')}"
+        assert get_response.get("code") == RetCode.SUCCESS, f"Get should succeed, got code {get_response.get('code')}"
         api_keys: List[Dict[str, Any]] = get_response["data"]
 
         # Verify the generated key is in the list
@@ -90,7 +91,7 @@ class TestGenerateUserApiKey:
         response: Dict[str, Any] = generate_user_api_key(admin_session, user_name)
 
         # Verify response code, message, and data
-        assert response.get("code") == 0, f"Response code should be 0, got {response.get('code')}"
+        assert response.get("code") == RetCode.SUCCESS, f"Response code should be {RetCode.SUCCESS}, got {response.get('code')}"
         assert "message" in response, "Response should contain message"
         assert "data" in response, "Response should contain data"
 
@@ -119,13 +120,13 @@ class TestGenerateUserApiKey:
 
         # Generate first API key
         response1: Dict[str, Any] = generate_user_api_key(admin_session, user_name)
-        assert response1.get("code") == 0, f"First generate should succeed, got code {response1.get('code')}"
+        assert response1.get("code") == RetCode.SUCCESS, f"First generate should succeed, got code {response1.get('code')}"
         key1: Dict[str, Any] = response1["data"]
         token1: str = key1["token"]
 
         # Generate second API key
         response2: Dict[str, Any] = generate_user_api_key(admin_session, user_name)
-        assert response2.get("code") == 0, f"Second generate should succeed, got code {response2.get('code')}"
+        assert response2.get("code") == RetCode.SUCCESS, f"Second generate should succeed, got code {response2.get('code')}"
         key2: Dict[str, Any] = response2["data"]
         token2: str = key2["token"]
 
@@ -134,7 +135,7 @@ class TestGenerateUserApiKey:
 
         # Both should appear in the list
         get_response: Dict[str, Any] = get_user_api_key(admin_session, user_name)
-        assert get_response.get("code") == 0, f"Get should succeed, got code {get_response.get('code')}"
+        assert get_response.get("code") == RetCode.SUCCESS, f"Get should succeed, got code {get_response.get('code')}"
         api_keys: List[Dict[str, Any]] = get_response["data"]
         tokens: List[str] = [key.get("token") for key in api_keys]
         assert token1 in tokens, "First token should be in the list"
@@ -146,10 +147,10 @@ class TestGenerateUserApiKey:
         response: Dict[str, Any] = generate_user_api_key(admin_session, "nonexistent_user_12345")
         
         # Verify error response
-        assert response.get("code") != 0, "Response code should indicate error"
+        assert response.get("code") == RetCode.BAD_REQUEST, "Response code should indicate error"
         assert "message" in response, "Response should contain message"
         message: str = response.get("message", "")
-        assert "User not found" in message or "not found" in message.lower(), f"Message should indicate user not found, got: {message}"
+        assert  message == "User not found!", f"Message should indicate user not found, got: {message}"
 
 
     @pytest.mark.p2
@@ -159,11 +160,11 @@ class TestGenerateUserApiKey:
 
         # Generate multiple API keys
         response1: Dict[str, Any] = generate_user_api_key(admin_session, user_name)
-        assert response1.get("code") == 0, f"First generate should succeed, got code {response1.get('code')}"
+        assert response1.get("code") == RetCode.SUCCESS, f"First generate should succeed, got code {response1.get('code')}"
         key1: Dict[str, Any] = response1["data"]
         
         response2: Dict[str, Any] = generate_user_api_key(admin_session, user_name)
-        assert response2.get("code") == 0, f"Second generate should succeed, got code {response2.get('code')}"
+        assert response2.get("code") == RetCode.SUCCESS, f"Second generate should succeed, got code {response2.get('code')}"
         key2: Dict[str, Any] = response2["data"]
 
         # Tenant IDs should be the same for the same user
@@ -175,7 +176,7 @@ class TestGenerateUserApiKey:
         user_name: str = EMAIL
 
         response: Dict[str, Any] = generate_user_api_key(admin_session, user_name)
-        assert response.get("code") == 0, f"Response code should be 0, got {response.get('code')}"
+        assert response.get("code") == RetCode.SUCCESS, f"Response code should be {RetCode.SUCCESS}, got {response.get('code')}"
         result: Dict[str, Any] = response["data"]
         token: str = result["token"]
 
@@ -192,7 +193,7 @@ class TestGenerateUserApiKey:
             token_without_prefix: str = token.replace("ragflow-", "")[:32]
             assert beta != token_without_prefix, "Beta should be independently generated, not derived from token"
 
-    @pytest.mark.p3
+    @pytest.mark.p1
     def test_generate_user_api_key_without_auth(self) -> None:
         """Test that generating API key without admin auth fails"""
         session: requests.Session = requests.Session()
@@ -201,9 +202,10 @@ class TestGenerateUserApiKey:
         response: Dict[str, Any] = generate_user_api_key(session, user_name)
         
         # Verify error response
-        assert response.get("code") != 0, "Response code should indicate error"
+        assert response.get("code") == RetCode.UNAUTHORIZED, "Response code should indicate error"
         assert "message" in response, "Response should contain message"
         message: str = response.get("message", "").lower()
+        # The message is an HTML string indicating unauthorized user .
         assert "auth" in message or "login" in message or "403" in message or "401" in message, f"Message should indicate auth error, got: {response.get('message')}"
 
     @pytest.mark.p3
@@ -212,7 +214,7 @@ class TestGenerateUserApiKey:
         user_name: str = EMAIL
 
         response: Dict[str, Any] = generate_user_api_key(admin_session, user_name)
-        assert response.get("code") == 0, f"Response code should be 0, got {response.get('code')}"
+        assert response.get("code") == RetCode.SUCCESS, f"Response code should be {RetCode.SUCCESS}, got {response.get('code')}"
         result: Dict[str, Any] = response["data"]
 
         # create_time should be a timestamp (int)

@@ -66,31 +66,6 @@ class TestGetUserApiKey:
         token_found: bool = any(key.get("token") == generated_token for key in api_keys)
         assert token_found, "Generated API key should appear in the list"
 
-    @pytest.mark.p1
-    def test_get_user_api_key_includes_newly_generated(self, admin_session: requests.Session) -> None:
-        """Test that newly generated API key appears in get_user_api_key list"""
-        user_name: str = EMAIL
-
-        # Get initial count of API keys
-        initial_response: Dict[str, Any] = get_user_api_key(admin_session, user_name)
-        assert initial_response["code"] == RetCode.SUCCESS, initial_response
-        initial_count: int = len(initial_response["data"])
-
-        # Generate a new API key
-        generate_response: Dict[str, Any] = generate_user_api_key(admin_session, user_name)
-        assert generate_response["code"] == RetCode.SUCCESS, generate_response
-        new_token: str = generate_response["data"]["token"]
-
-        # Get API keys again
-        updated_response: Dict[str, Any] = get_user_api_key(admin_session, user_name)
-        assert updated_response["code"] == RetCode.SUCCESS, updated_response
-        updated_keys: List[Dict[str, Any]] = updated_response["data"]
-
-        # Verify count increased and new token is in the list
-        assert len(updated_keys) > initial_count, "API key count should increase after generating new key"
-        token_found: bool = any(key.get("token") == new_token for key in updated_keys)
-        assert token_found, "Newly generated API key should appear in the list"
-
     @pytest.mark.p2
     def test_get_user_api_key_nonexistent_user(self, admin_session: requests.Session) -> None:
         """Test getting API keys for non-existent user fails"""
