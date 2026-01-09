@@ -31,8 +31,13 @@ from api.utils.api_utils import (
     get_result,
     token_required,
 )
+from api.utils.validation_utils import (
+    AddModelReq,
+    validate_and_parse_json_request,
+)
 from common.constants import RetCode, StatusEnum, LLMType
-from rag.llm import ChatModel, EmbeddingModel, RerankModel
+from rag.llm import ChatModel, EmbeddingModel, RerankModel, CvModel, TTSModel, OcrModel, Seq2txtModel
+from rag.utils.base64_image import test_image
 
 
 @manager.route("/models/default", methods=["POST"])  # noqa: F821
@@ -99,19 +104,14 @@ async def set_default_models(tenant_id: str) -> Response:
             llm_factory: Optional[str]
             llm_name, llm_factory = TenantLLMService.split_model_name_and_factory(model_id)
 
-
             if llm_factory == "Builtin":
                 builtin_exists = LLMService.query(fid="Builtin", llm_name=llm_name, model_type=model_type)
                 if not builtin_exists:
-                    return get_error_argument_result(
-                        f"Model '{model_id}' (type: {model_type}) is not configured. Please add the model first using POST /api/v1/models"
-                    )
+                    return get_error_argument_result(f"Model '{model_id}' (type: {model_type}) is not configured. Please add the model first using POST /api/v1/models")
             else:
                 model_exists: List[Any] = TenantLLMService.query(tenant_id=tenant_id, llm_name=llm_name, llm_factory=llm_factory, model_type=model_type)
                 if not model_exists:
-                    return get_error_argument_result(
-                        f"Model '{model_id}' (type: {model_type}) is not configured. Please add the model first using POST /api/v1/models"
-                    )
+                    return get_error_argument_result(f"Model '{model_id}' (type: {model_type}) is not configured. Please add the model first using POST /api/v1/models")
 
             update_data[field_name] = req[field_name]
 
@@ -248,26 +248,40 @@ async def list_user_models(tenant_id: str) -> Response:
 @token_required
 async def add_model(tenant_id: str) -> Response:
     """
-    Add models for the user by factory and API key.
+    Add models for the user. Supports two modes:
+    1. Factory-level: Add all models from a factory (for AI service providers)
+    2. Individual model: Add a single model (for local/self-hosted models)
 
     Args:
         tenant_id (str): The tenant ID extracted from the API token.
 
     Request Parameters:
         Request body (JSON):
-            - llm_factory (str, required): LLM factory/provider name (e.g., OpenAI, Anthropic, ZHIPU-AI)
-            - api_key (str, required): API key for the factory
-            - base_url (str, optional): API base URL (for self-deployed models)
+            - llm_factory (str, required): LLM factory/provider name
+
+        For factory-level addition:
+            - api_key (str, required for most factories): API key for the factory
+            - base_url (str, optional): API base URL
+            - model_type (str, optional): Filter to only add models of this type
+            - llm_name (str, optional): Filter to only add this specific model
             - Special factory parameters (depending on factory):
                 * VolcEngine: ark_api_key, endpoint_id
                 * Tencent Hunyuan: hunyuan_sid, hunyuan_sk
                 * Tencent Cloud: tencent_cloud_sid, tencent_cloud_sk
-                * Bedrock: bedrock_ak, bedrock_sk, bedrock_region
+                * Bedrock: bedrock_ak, bedrock_sk, bedrock_region, auth_mode, aws_role_arn
                 * BaiduYiyan: yiyan_ak, yiyan_sk
                 * Fish Audio: fish_audio_ak, fish_audio_refid
                 * Google Cloud: google_project_id, google_region, google_service_account_key
                 * Azure-OpenAI: api_key, api_version
                 * OpenRouter: api_key, provider_order
+                * XunFei Spark: spark_app_id, spark_api_secret, spark_api_key (for TTS) or spark_api_password (for chat)
+
+        For individual model addition:
+            - llm_name (str, required): Model name
+            - model_type (str, required): Model type (chat, embedding, rerank, image2text, speech2text, tts, ocr)
+            - api_base (str, optional): API base URL (required for local models if api_key not provided)
+            - api_key (str, optional): API key (can be empty string for local models)
+            - max_tokens (int, optional): Maximum tokens for the model
 
     Returns:
         Response: A JSON response containing the operation result.
@@ -275,20 +289,28 @@ async def add_model(tenant_id: str) -> Response:
             - On error: Returns error response with appropriate error code and message
 
     Notes:
-        - The method adds all models from the specified factory to the tenant's configuration.
-        - The API key is validated by testing access to at least one model of each type (chat, embedding, rerank).
+        - Factory-level mode: Adds all models from the specified factory. API key is validated by testing access.
+        - Individual model mode: Adds a single model. The model is tested before being saved.
         - Self-deployed models (LocalAI, Ollama, Xinference, etc.) skip API key validation.
-        - Special factory authentication methods are supported (VolcEngine, Tencent, Bedrock, etc.).
+        - Special factory authentication methods are supported.
         - If validation fails, no models are saved and an error is returned.
-        - The base_url parameter is optional and used for self-deployed models.
+        - Tencent Hunyuan and Tencent Cloud always use factory-level addition (like set_api_key).
     """
-    req: Dict[str, Any] = await get_request_json()
+    # Validate request using Pydantic model
+    req, err = await validate_and_parse_json_request(request, AddModelReq)
+    if err is not None:
+        return get_error_argument_result(err)
 
-    factory: Optional[str] = req.get("llm_factory")
-    api_key: str = req.get("api_key", "x")
+    factory: str = req["llm_factory"]
+    llm_name: Optional[str] = req.get("llm_name")
+    model_type: Optional[str] = req.get("model_type")
+    api_base: Optional[str] = req.get("base_url")  # base_url is the alias for api_base
+    max_tokens: Optional[int] = req.get("max_tokens")
 
-    if not factory:
-        return get_error_argument_result("llm_factory is required")
+    # Validate tenant exists
+    tenants: List[Dict[str, Any]] = TenantService.get_info_by(tenant_id)
+    if not tenants:
+        return get_error_data_result("Tenant not found!", code=RetCode.DATA_ERROR)
 
     # Builtin should always be available and must not be added explicitly
     if factory == "Builtin":
@@ -302,14 +324,26 @@ async def add_model(tenant_id: str) -> Response:
         nonlocal req
         return json.dumps({k: req.get(k, "") for k in keys})
 
-    if factory == "VolcEngine":
-        api_key = apikey_json(["ark_api_key", "endpoint_id"])
-    elif factory == "Tencent Hunyuan":
+    # Initialize api_key - will be set based on factory type
+    api_key: str = "x"
+    provided_api_key = req.get("api_key")
+
+    # Tencent Hunyuan and Tencent Cloud always use factory-level addition (like set_api_key)
+    # They delegate to set_api_key behavior, so we handle them specially
+    if factory == "Tencent Hunyuan":
         api_key = apikey_json(["hunyuan_sid", "hunyuan_sk"])
+        # Force factory-level mode for these factories
+        llm_name = None
+        model_type = None
     elif factory == "Tencent Cloud":
         api_key = apikey_json(["tencent_cloud_sid", "tencent_cloud_sk"])
+        # Force factory-level mode for these factories
+        llm_name = None
+        model_type = None
+    elif factory == "VolcEngine":
+        api_key = apikey_json(["ark_api_key", "endpoint_id"])
     elif factory == "Bedrock":
-        api_key = apikey_json(["bedrock_ak", "bedrock_sk", "bedrock_region"])
+        api_key = apikey_json(["auth_mode", "bedrock_ak", "bedrock_sk", "bedrock_region", "aws_role_arn"])
     elif factory == "BaiduYiyan":
         api_key = apikey_json(["yiyan_ak", "yiyan_sk"])
     elif factory == "Fish Audio":
@@ -320,81 +354,319 @@ async def add_model(tenant_id: str) -> Response:
         api_key = apikey_json(["api_key", "api_version"])
     elif factory == "OpenRouter":
         api_key = apikey_json(["api_key", "provider_order"])
+    elif factory == "XunFei Spark":
+        if llm_name and model_type:
+            # Individual model mode
+            if model_type == "tts":
+                # Validate required fields for XunFei Spark TTS
+                if not req.get("spark_app_id") or not req.get("spark_api_secret") or not req.get("spark_api_key"):
+                    return get_error_argument_result("spark_app_id, spark_api_secret, and spark_api_key are required for XunFei Spark TTS models")
+                api_key = apikey_json(["spark_app_id", "spark_api_secret", "spark_api_key"])
+            elif model_type == "chat":
+                api_key = req.get("spark_api_password", "")
+            else:
+                api_key = req.get("api_key", "x")
+        else:
+            # Factory-level mode
+            api_key = req.get("api_key", "x")
+    elif factory == "MinerU":
+        # MinerU uses a special config structure (from web UI)
+        mineru_config: Dict[str, Any] = {}
+        if req.get("mineru_backend"):
+            mineru_config["mineru_backend"] = req["mineru_backend"]
+        if req.get("mineru_server_url"):
+            mineru_config["mineru_server_url"] = req["mineru_server_url"]
+        if req.get("mineru_delete_output") is not None:
+            mineru_config["mineru_delete_output"] = req["mineru_delete_output"]
+        api_key = json.dumps(mineru_config) if mineru_config else "x"
+    else:
+        # Use provided api_key or default
+        if isinstance(provided_api_key, dict):
+            api_key = json.dumps(provided_api_key)
+        elif provided_api_key is not None:
+            api_key = provided_api_key
 
-    # Skip API key validation for self-deployed models
-    SELF_DEPLOYED_FACTORIES: List[str] = ["LocalAI", "Ollama", "Xinference", "LM-Studio", "GPUStack", "FastEmbed", "Builtin"]
+    # Local/self-hosted factories
+    LOCAL_FACTORIES: List[str] = [
+        "LocalAI",
+        "Ollama",
+        "Xinference",
+        "LM-Studio",
+        "GPUStack",
+        "FastEmbed",
+        "HuggingFace",
+        "OpenAI-API-Compatible",
+        "VLLM",
+        "ModelScope",
+        "TogetherAI",
+        "Replicate",
+        "OpenRouter",
+        "Builtin",
+    ]
 
-    # Test if API key works (skip for self-deployed)
-    chat_passed: bool = False
-    embd_passed: bool = False
-    rerank_passed: bool = False
-    extra: Dict[str, str] = {"provider": factory}
-    msg: str = ""
-    base_url: str = req.get("base_url", "")
+    is_local = factory in LOCAL_FACTORIES
 
-    if factory not in SELF_DEPLOYED_FACTORIES:
-        for llm in LLMService.query(fid=factory):
-            if not embd_passed and llm.model_type == LLMType.EMBEDDING.value:
-                assert factory in EmbeddingModel, f"Embedding model from {factory} is not supported yet."
-                mdl = EmbeddingModel[factory](api_key, llm.llm_name, base_url=base_url)
+    # For local models, allow empty api_key (treat "x" as empty/default)
+    if is_local and (not api_key or api_key == "x"):
+        api_key = ""
+
+    # Determine if this is individual model addition or factory-level addition
+    is_individual_model = llm_name is not None and model_type is not None
+
+    # Additional validation: if one is provided, both must be provided for individual model mode
+    # (This is also validated by Pydantic, but adding explicit check for clarity)
+    if (llm_name and not model_type) or (model_type and not llm_name):
+        return get_error_argument_result("Both llm_name and model_type must be provided together for individual model addition")
+
+    # Individual model addition mode
+    if is_individual_model:
+        # Process model name for local factories
+        processed_llm_name = llm_name
+        if factory == "LocalAI":
+            processed_llm_name = llm_name + "___LocalAI"
+        elif factory == "HuggingFace":
+            processed_llm_name = llm_name + "___HuggingFace"
+        elif factory == "OpenAI-API-Compatible":
+            processed_llm_name = llm_name + "___OpenAI-API"
+        elif factory == "VLLM":
+            processed_llm_name = llm_name + "___VLLM"
+
+        # Test the model before adding
+        msg = ""
+        mdl_nm = processed_llm_name.split("___")[0]
+        extra = {"provider": factory}
+        model_api_key = api_key
+        model_base_url = api_base or ""
+
+        # Test model based on type
+        match model_type:
+            case LLMType.EMBEDDING.value:
+                if factory not in EmbeddingModel:
+                    return get_error_argument_result(f"Embedding model from {factory} is not supported yet.")
+                mdl = EmbeddingModel[factory](key=model_api_key, model_name=mdl_nm, base_url=model_base_url)
                 try:
                     arr, tc = mdl.encode(["Test if the api key is available"])
                     if len(arr[0]) == 0:
                         raise Exception("Fail")
-                    embd_passed = True
                 except Exception as e:
-                    msg += f"\nFail to access embedding model({llm.llm_name}) using this api key." + str(e)
-            elif not chat_passed and llm.model_type == LLMType.CHAT:
-                assert factory in ChatModel, f"Chat model from {factory} is not supported yet."
-                mdl = ChatModel[factory](api_key, llm.llm_name, base_url=base_url, **extra)
+                    msg = f"\nFail to access embedding model({factory}/{mdl_nm})." + str(e)
+
+            case LLMType.CHAT.value:
+                if factory not in ChatModel:
+                    return get_error_argument_result(f"Chat model from {factory} is not supported yet.")
+                mdl = ChatModel[factory](
+                    key=model_api_key,
+                    model_name=mdl_nm,
+                    base_url=model_base_url,
+                    **extra,
+                )
                 try:
-                    m, tc = mdl.chat(None, [{"role": "user", "content": "Hello! How are you doing!"}], {"temperature": 0.9, "max_tokens": 50})
-                    if m.find("**ERROR**") >= 0:
+                    # Use async_chat to match llm_app.py behavior
+                    m, tc = await mdl.async_chat(None, [{"role": "user", "content": "Hello! How are you doing!"}], {"temperature": 0.9})
+                    if not tc and m.find("**ERROR**:") >= 0:
                         raise Exception(m)
-                    chat_passed = True
                 except Exception as e:
-                    msg += f"\nFail to access model({factory}/{llm.llm_name}) using this api key." + str(e)
-            elif not rerank_passed and llm.model_type == LLMType.RERANK:
-                assert factory in RerankModel, f"Re-rank model from {factory} is not supported yet."
-                mdl = RerankModel[factory](api_key, llm.llm_name, base_url=base_url)
+                    msg = f"\nFail to access model({factory}/{mdl_nm})." + str(e)
+
+            case LLMType.RERANK.value:
+                if factory not in RerankModel:
+                    return get_error_argument_result(f"Re-rank model from {factory} is not supported yet.")
                 try:
-                    arr, tc = mdl.similarity("What's the weather?", ["Is it sunny today?"])
-                    if len(arr) == 0 or tc == 0:
-                        raise Exception("Fail")
-                    rerank_passed = True
-                    logging.debug(f"passed model rerank {llm.llm_name}")
+                    mdl = RerankModel[factory](key=model_api_key, model_name=mdl_nm, base_url=model_base_url)
+                    arr, tc = mdl.similarity("Hello~ RAGFlower!", ["Hi, there!", "Ohh, my friend!"])
+                    if len(arr) == 0:
+                        raise Exception("Not known.")
+                except KeyError:
+                    msg = f"{factory} does not support this model({factory}/{mdl_nm})"
                 except Exception as e:
-                    msg += f"\nFail to access model({factory}/{llm.llm_name}) using this api key." + str(e)
-            if any([embd_passed, chat_passed, rerank_passed]):
-                msg = ""
-                break
+                    msg = f"\nFail to access model({factory}/{mdl_nm})." + str(e)
 
-    if msg:
-        return get_error_data_result(message=msg, code=RetCode.AUTHENTICATION_ERROR)
+            case LLMType.IMAGE2TEXT.value:
+                if factory not in CvModel:
+                    return get_error_argument_result(f"Image to text model from {factory} is not supported yet.")
+                mdl = CvModel[factory](key=model_api_key, model_name=mdl_nm, base_url=model_base_url)
+                try:
+                    image_data = test_image
+                    m, tc = mdl.describe(image_data)
+                    if not tc and m.find("**ERROR**:") >= 0:
+                        raise Exception(m)
+                except Exception as e:
+                    msg = f"\nFail to access model({factory}/{mdl_nm})." + str(e)
 
-    # Save all models from this factory
-    llm_config: Dict[str, Any] = {"api_key": api_key, "api_base": base_url}
-    for llm in LLMService.query(fid=factory):
-        llm_config["max_tokens"] = llm.max_tokens
+            case LLMType.TTS.value:
+                if factory not in TTSModel:
+                    return get_error_argument_result(f"TTS model from {factory} is not supported yet.")
+                mdl = TTSModel[factory](key=model_api_key, model_name=mdl_nm, base_url=model_base_url)
+                try:
+                    for resp in mdl.tts("Hello~ RAGFlower!"):
+                        pass
+                except RuntimeError as e:
+                    msg = f"\nFail to access model({factory}/{mdl_nm})." + str(e)
+                except (AttributeError, TypeError) as e:
+                    # Handle case where required fields are missing (e.g., None.encode())
+                    msg = f"\nFail to access model({factory}/{mdl_nm}). Missing or invalid authentication fields." + str(e)
+
+            case LLMType.OCR.value:
+                if factory not in OcrModel:
+                    return get_error_argument_result(f"OCR model from {factory} is not supported yet.")
+                try:
+                    mdl = OcrModel[factory](key=model_api_key, model_name=mdl_nm, base_url=model_base_url)
+                    ok, reason = mdl.check_available()
+                    if not ok:
+                        raise RuntimeError(reason or "Model not available")
+                except Exception as e:
+                    msg = f"\nFail to access model({factory}/{mdl_nm})." + str(e)
+
+            case LLMType.SPEECH2TEXT.value:
+                if factory not in Seq2txtModel:
+                    return get_error_argument_result(f"Speech model from {factory} is not supported yet.")
+                try:
+                    mdl = Seq2txtModel[factory](key=model_api_key, model_name=mdl_nm, base_url=model_base_url)
+                    # TODO: check the availability
+                except Exception as e:
+                    msg = f"\nFail to access model({factory}/{mdl_nm})." + str(e)
+
+            case _:
+                return get_error_argument_result(f"Unknown model type: {model_type}")
+
+        # Skip validation for local models
+        if msg and not is_local:
+            return get_error_data_result(message=msg, code=RetCode.AUTHENTICATION_ERROR)
+
+        # Save the individual model
+        llm_config: Dict[str, Any] = {
+            "api_key": api_key,
+            "api_base": api_base or "",
+            "max_tokens": max_tokens or 8192,
+        }
         if not TenantLLMService.filter_update(
             [
                 TenantLLM.tenant_id == tenant_id,
                 TenantLLM.llm_factory == factory,
-                TenantLLM.llm_name == llm.llm_name,
+                TenantLLM.llm_name == processed_llm_name,
             ],
             llm_config,
         ):
             TenantLLMService.save(
                 tenant_id=tenant_id,
                 llm_factory=factory,
-                llm_name=llm.llm_name,
-                model_type=llm.model_type,
+                llm_name=processed_llm_name,
+                model_type=model_type,
                 api_key=llm_config["api_key"],
                 api_base=llm_config["api_base"],
                 max_tokens=llm_config["max_tokens"],
             )
 
-    return get_result()
+        return get_result()
+
+    # Factory-level addition mode (like set_api_key)
+    else:
+        # Test if API key works (skip for self-deployed)
+        chat_passed: bool = False
+        embd_passed: bool = False
+        rerank_passed: bool = False
+        extra: Dict[str, str] = {"provider": factory}
+        msg: str = ""
+        base_url: str = api_base or ""
+
+        if not is_local:
+            # Track if any models were tested (for filtering validation)
+            tested_any = False
+            for llm in LLMService.query(fid=factory):
+                # Optional filtering: if model_type or llm_name provided, only test/add those
+                if model_type and llm.model_type != model_type:
+                    continue
+                if llm_name and llm.llm_name != llm_name:
+                    continue
+
+                tested_any = True
+
+                if not embd_passed and llm.model_type == LLMType.EMBEDDING.value:
+                    if factory not in EmbeddingModel:
+                        continue
+                    mdl = EmbeddingModel[factory](api_key, llm.llm_name, base_url=base_url)
+                    try:
+                        arr, tc = mdl.encode(["Test if the api key is available"])
+                        if len(arr[0]) == 0:
+                            raise Exception("Fail")
+                        embd_passed = True
+                    except Exception as e:
+                        msg += f"\nFail to access embedding model({llm.llm_name})." + str(e)
+                elif not chat_passed and llm.model_type == LLMType.CHAT.value:
+                    if factory not in ChatModel:
+                        continue
+                    mdl = ChatModel[factory](api_key, llm.llm_name, base_url=base_url, **extra)
+                    try:
+                        # Use async_chat to match llm_app.py behavior
+                        m, tc = await mdl.async_chat(None, [{"role": "user", "content": "Hello! How are you doing!"}], {"temperature": 0.9, "max_tokens": 50})
+                        if m.find("**ERROR**") >= 0:
+                            raise Exception(m)
+                        chat_passed = True
+                    except Exception as e:
+                        msg += f"\nFail to access model({factory}/{llm.llm_name})." + str(e)
+                elif not rerank_passed and llm.model_type == LLMType.RERANK.value:
+                    if factory not in RerankModel:
+                        continue
+                    mdl = RerankModel[factory](api_key, llm.llm_name, base_url=base_url)
+                    try:
+                        arr, tc = mdl.similarity("What's the weather?", ["Is it sunny today?"])
+                        if len(arr) == 0 or tc == 0:
+                            raise Exception("Fail")
+                        rerank_passed = True
+                        logging.debug(f"passed model rerank {llm.llm_name}")
+                    except Exception as e:
+                        msg += f"\nFail to access model({factory}/{llm.llm_name})." + str(e)
+                if any([embd_passed, chat_passed, rerank_passed]):
+                    msg = ""
+                    break
+
+            # If filters were applied but no models matched, return error
+            if (model_type or llm_name) and not tested_any:
+                filter_msg = []
+                if model_type:
+                    filter_msg.append(f"model_type={model_type}")
+                if llm_name:
+                    filter_msg.append(f"llm_name={llm_name}")
+                return get_error_argument_result(f"No models found matching filters: {', '.join(filter_msg)}")
+
+        if msg:
+            return get_error_data_result(message=msg, code=RetCode.AUTHENTICATION_ERROR)
+
+        # Save all models from this factory (with optional filtering)
+        llm_config: Dict[str, Any] = {"api_key": api_key, "api_base": base_url}
+        # Add optional filter fields if provided (like set_api_key does)
+        if model_type:
+            llm_config["model_type"] = model_type
+        if llm_name:
+            llm_config["llm_name"] = llm_name
+
+        for llm in LLMService.query(fid=factory):
+            # Apply optional filtering
+            if model_type and llm.model_type != model_type:
+                continue
+            if llm_name and llm.llm_name != llm_name:
+                continue
+
+            llm_config["max_tokens"] = llm.max_tokens
+            if not TenantLLMService.filter_update(
+                [
+                    TenantLLM.tenant_id == tenant_id,
+                    TenantLLM.llm_factory == factory,
+                    TenantLLM.llm_name == llm.llm_name,
+                ],
+                llm_config,
+            ):
+                TenantLLMService.save(
+                    tenant_id=tenant_id,
+                    llm_factory=factory,
+                    llm_name=llm.llm_name,
+                    model_type=llm.model_type,
+                    api_key=llm_config["api_key"],
+                    api_base=llm_config["api_base"],
+                    max_tokens=llm_config["max_tokens"],
+                )
+
+        return get_result()
 
 
 @manager.route("/models", methods=["DELETE"])  # noqa: F821

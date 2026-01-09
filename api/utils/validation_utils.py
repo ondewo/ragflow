@@ -34,7 +34,9 @@ from werkzeug.exceptions import BadRequest, UnsupportedMediaType
 from api.constants import DATASET_NAME_LIMIT
 
 
-async def validate_and_parse_json_request(request: Request, validator: type[BaseModel], *, extras: dict[str, Any] | None = None, exclude_unset: bool = False) -> tuple[dict[str, Any] | None, str | None]:
+async def validate_and_parse_json_request(
+    request: Request, validator: type[BaseModel], *, extras: dict[str, Any] | None = None, exclude_unset: bool = False
+) -> tuple[dict[str, Any] | None, str | None]:
     """
     Validates and parses JSON requests through a multi-stage validation pipeline.
 
@@ -723,3 +725,169 @@ class BaseListReq(BaseModel):
 
 
 class ListDatasetReq(BaseListReq): ...
+
+
+class AddModelReq(Base):
+    """Validation model for adding models (factory-level or individual model)."""
+
+    llm_factory: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1), Field(...)]
+    api_key: Annotated[str | dict[str, Any] | None, Field(default=None)]
+    api_base: Annotated[str | None, Field(default=None, max_length=2048, alias="base_url", serialization_alias="base_url")]
+    llm_name: Annotated[str | None, Field(default=None, max_length=255)]
+    model_type: Annotated[str | None, Field(default=None)]
+    max_tokens: Annotated[int | None, Field(default=None, ge=1, le=1000000)]
+
+    # Special factory authentication fields
+    # VolcEngine
+    ark_api_key: Annotated[str | None, Field(default=None)]
+    endpoint_id: Annotated[str | None, Field(default=None)]
+
+    # Tencent Hunyuan
+    hunyuan_sid: Annotated[str | None, Field(default=None)]
+    hunyuan_sk: Annotated[str | None, Field(default=None)]
+
+    # Tencent Cloud
+    tencent_cloud_sid: Annotated[str | None, Field(default=None)]
+    tencent_cloud_sk: Annotated[str | None, Field(default=None)]
+
+    # Bedrock
+    bedrock_ak: Annotated[str | None, Field(default=None)]
+    bedrock_sk: Annotated[str | None, Field(default=None)]
+    bedrock_region: Annotated[str | None, Field(default=None)]
+    auth_mode: Annotated[str | None, Field(default=None)]
+    aws_role_arn: Annotated[str | None, Field(default=None)]
+
+    # BaiduYiyan
+    yiyan_ak: Annotated[str | None, Field(default=None)]
+    yiyan_sk: Annotated[str | None, Field(default=None)]
+
+    # Fish Audio
+    fish_audio_ak: Annotated[str | None, Field(default=None)]
+    fish_audio_refid: Annotated[str | None, Field(default=None)]
+
+    # Google Cloud
+    google_project_id: Annotated[str | None, Field(default=None)]
+    google_region: Annotated[str | None, Field(default=None)]
+    google_service_account_key: Annotated[str | None, Field(default=None)]
+
+    # Azure-OpenAI
+    api_version: Annotated[str | None, Field(default=None)]
+
+    # OpenRouter
+    provider_order: Annotated[str | None, Field(default=None)]
+
+    # XunFei Spark
+    spark_app_id: Annotated[str | None, Field(default=None)]
+    spark_api_secret: Annotated[str | None, Field(default=None)]
+    spark_api_key: Annotated[str | None, Field(default=None)]
+    spark_api_password: Annotated[str | None, Field(default=None)]
+
+    # MinerU
+    mineru_backend: Annotated[str | None, Field(default=None)]
+    mineru_server_url: Annotated[str | None, Field(default=None)]
+    mineru_delete_output: Annotated[str | None, Field(default=None)]
+
+    @model_validator(mode="after")
+    def validate_model_addition_mode(self) -> "AddModelReq":
+        """
+        Validates the request based on addition mode:
+        - Factory-level: requires llm_factory and api_key (or special auth fields)
+        - Individual model: requires llm_factory, llm_name, model_type, and api_base (for local models) or api_key
+        """
+        from common.constants import LLMType
+
+        # Local/self-hosted factories that require individual model addition
+        LOCAL_FACTORIES = [
+            "Ollama",
+            "Xinference",
+            "LocalAI",
+            "LM-Studio",
+            "GPUStack",
+            "HuggingFace",
+            "OpenAI-API-Compatible",
+            "VLLM",
+            "ModelScope",
+            "TogetherAI",
+            "Replicate",
+            "OpenRouter",
+            "FastEmbed",
+        ]
+
+        is_local = self.llm_factory in LOCAL_FACTORIES
+
+        # Individual model addition mode
+        if self.llm_name is not None or self.model_type is not None:
+            if not self.llm_name:
+                raise PydanticCustomError("field_required", "llm_name is required when adding an individual model")
+            if not self.model_type:
+                raise PydanticCustomError("field_required", "model_type is required when adding an individual model")
+
+            # Validate model_type
+            valid_types = [LLMType.CHAT, LLMType.EMBEDDING, LLMType.RERANK, LLMType.IMAGE2TEXT, LLMType.SPEECH2TEXT, LLMType.TTS, LLMType.OCR]
+            if self.model_type not in valid_types:
+                raise PydanticCustomError("invalid_value", f"model_type must be one of: {', '.join(valid_types)}")
+
+            # For local models, api_base is typically required
+            if is_local and not self.api_base and not self.api_key:
+                raise PydanticCustomError("field_required", "api_base is required for local/self-hosted models when api_key is not provided")
+
+        # Factory-level addition mode
+        else:
+            # Validate special factory authentication requirements
+            if self.llm_factory == "VolcEngine":
+                if not self.ark_api_key or not self.endpoint_id:
+                    raise PydanticCustomError("field_required", "ark_api_key and endpoint_id are required for VolcEngine")
+            elif self.llm_factory == "Tencent Hunyuan":
+                if not self.hunyuan_sid or not self.hunyuan_sk:
+                    raise PydanticCustomError("field_required", "hunyuan_sid and hunyuan_sk are required for Tencent Hunyuan")
+            elif self.llm_factory == "Tencent Cloud":
+                if not self.tencent_cloud_sid or not self.tencent_cloud_sk:
+                    raise PydanticCustomError("field_required", "tencent_cloud_sid and tencent_cloud_sk are required for Tencent Cloud")
+            elif self.llm_factory == "Bedrock":
+                if not self.bedrock_ak or not self.bedrock_sk or not self.bedrock_region:
+                    raise PydanticCustomError("field_required", "bedrock_ak, bedrock_sk, and bedrock_region are required for Bedrock")
+            elif self.llm_factory == "BaiduYiyan":
+                if not self.yiyan_ak or not self.yiyan_sk:
+                    raise PydanticCustomError("field_required", "yiyan_ak and yiyan_sk are required for BaiduYiyan")
+            elif self.llm_factory == "Fish Audio":
+                if not self.fish_audio_ak or not self.fish_audio_refid:
+                    raise PydanticCustomError("field_required", "fish_audio_ak and fish_audio_refid are required for Fish Audio")
+            elif self.llm_factory == "Google Cloud":
+                if not self.google_project_id or not self.google_region or not self.google_service_account_key:
+                    raise PydanticCustomError("field_required", "google_project_id, google_region, and google_service_account_key are required for Google Cloud")
+            elif self.llm_factory == "Azure-OpenAI":
+                if not self.api_key or not self.api_version:
+                    raise PydanticCustomError("field_required", "api_key and api_version are required for Azure-OpenAI")
+            elif self.llm_factory == "OpenRouter":
+                if not self.api_key or not self.provider_order:
+                    raise PydanticCustomError("field_required", "api_key and provider_order are required for OpenRouter")
+            elif self.llm_factory == "XunFei Spark":
+                # XunFei Spark has different requirements based on model_type
+                # This will be handled in the endpoint logic
+                pass
+            elif self.llm_factory == "MinerU":
+                # MinerU has special handling - can use mineru_backend, etc.
+                pass
+            elif not is_local:
+                # For non-local factories, api_key or special auth fields are required
+                # Check if any special auth fields are provided
+                has_special_auth = any(
+                    [
+                        self.ark_api_key,
+                        self.hunyuan_sid,
+                        self.tencent_cloud_sid,
+                        self.bedrock_ak,
+                        self.yiyan_ak,
+                        self.fish_audio_ak,
+                        self.google_project_id,
+                        self.api_version,
+                        self.provider_order,
+                        self.spark_app_id,
+                        self.spark_api_password,
+                    ]
+                )
+                if not self.api_key and not has_special_auth:
+                    raise PydanticCustomError("field_required", "api_key or appropriate authentication fields are required for factory-level addition")
+            # For local factories, empty api_key is allowed in factory-level mode (validation skipped above)
+
+        return self

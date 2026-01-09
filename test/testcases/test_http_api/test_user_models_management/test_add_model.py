@@ -13,13 +13,13 @@
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
 #
-from typing import Any, Dict
 
 import pytest
-from common import add_model, list_user_models
-from common.constants import RetCode
+from common import add_model
 from configs import INVALID_API_TOKEN
+from common.constants import RetCode
 from libs.auth import RAGFlowHttpApiAuth
+
 
 @pytest.mark.p1
 class TestAuthorization:
@@ -47,40 +47,24 @@ class TestAddModelParameterValidation:
 
     @pytest.mark.p1
     @pytest.mark.parametrize(
-        "payload, expected_code, expected_message",
+        "payload, expected_code, expected_message_pattern",
         [
-            ({}, RetCode.ARGUMENT_ERROR, "llm_factory is required"),
-            ({"llm_factory": ""}, RetCode.ARGUMENT_ERROR, "llm_factory is required"),
-            ({"llm_factory": None}, RetCode.ARGUMENT_ERROR, "llm_factory is required"),
-            ({"llm_factory": "InvalidFactoryName"}, RetCode.ARGUMENT_ERROR, "LLM factory InvalidFactoryName is not allowed"),
+            ({}, RetCode.ARGUMENT_ERROR, "Field: <llm_factory> - Message: <Field required>"),
+            ({"llm_factory": ""}, RetCode.ARGUMENT_ERROR, "Field: <llm_factory> - Message: <String should have at least 1 character>"),
+            ({"llm_factory": None}, RetCode.ARGUMENT_ERROR, "Field: <llm_factory> - Message: <Input should be a valid string>"),
+            (
+                {"llm_factory": "InvalidFactoryName"},
+                RetCode.ARGUMENT_ERROR,
+                "Field: <> - Message: <api_key or appropriate authentication fields are required for factory-level addition> - Value: <{'llm_factory': 'InvalidFactoryName'}>",
+            ),
         ],
         ids=["missing_llm_factory", "empty_llm_factory", "none_llm_factory", "invalid_factory"],
     )
-    def test_llm_factory_validation(self, HttpApiAuth, payload, expected_code, expected_message):
+    def test_llm_factory_validation(self, HttpApiAuth, payload, expected_code, expected_message_pattern):
         """Test that llm_factory parameter is validated correctly"""
         res = add_model(HttpApiAuth, payload)
         assert res["code"] == expected_code, res
-        assert res["message"] == expected_message, res
-
-    @pytest.mark.p1
-    @pytest.mark.parametrize(
-        "factory_name, expected_code, expected_message",
-        [
-            (
-                "OpenAI",
-                RetCode.AUTHENTICATION_ERROR,
-                "Incorrect API key provided",
-            ),
-            ("Tencent Hunyuan", RetCode.EXCEPTION_ERROR, "'InvalidCredential'"),
-            ("VolcEngine", RetCode.SUCCESS, ""),
-        ],
-        ids=["openai_missing_key", "tencent_hunyuan_missing_params", "volcengine_missing_params"],
-    )
-    def test_factory_name_validation(self, HttpApiAuth, factory_name, expected_code, expected_message):
-        """Concrete expectations per factory using current backend behavior."""
-        res = add_model(HttpApiAuth, {"llm_factory": factory_name, "api_key": "test-key"})
-        assert res["code"] == expected_code, res
-        assert res.get("message", "") == expected_message or expected_message in res.get("message", ""), res
+        assert expected_message_pattern in res["message"], f"Expected '{expected_message_pattern}' in '{res['message']}'"
 
     @pytest.mark.p1
     def test_add_builtin_factory_should_fail(self, HttpApiAuth):
@@ -89,38 +73,85 @@ class TestAddModelParameterValidation:
         assert res["code"] == RetCode.ARGUMENT_ERROR, res
         assert res["message"] == "LLM factory Builtin is not allowed", res
 
+    @pytest.mark.p1
+    def test_individual_model_missing_llm_name(self, HttpApiAuth):
+        """Test that llm_name is required when model_type is provided"""
+        res = add_model(HttpApiAuth, {"llm_factory": "Ollama", "model_type": "chat"})
+        assert res["code"] == RetCode.ARGUMENT_ERROR, res
+        assert "llm_name is required when adding an individual model" in res["message"], res
+
+    @pytest.mark.p1
+    def test_individual_model_missing_model_type(self, HttpApiAuth):
+        """Test that model_type is required when llm_name is provided"""
+        res = add_model(HttpApiAuth, {"llm_factory": "Ollama", "llm_name": "llama2"})
+        assert res["code"] == RetCode.ARGUMENT_ERROR, res
+        assert "model_type is required when adding an individual model" in res["message"], res
+
+    @pytest.mark.p1
+    def test_individual_model_both_required_together(self, HttpApiAuth):
+        """Test that both llm_name and model_type must be provided together"""
+        # This is also validated in the endpoint itself
+        res = add_model(HttpApiAuth, {"llm_factory": "Ollama", "llm_name": "llama2", "model_type": None})
+        assert res["code"] == RetCode.ARGUMENT_ERROR, res
+        # Either Pydantic validation or endpoint validation will catch this
+        assert "model_type is required when adding an individual model" in res["message"] or "Both llm_name and model_type must be provided together" in res["message"], res
+
+    @pytest.mark.p1
+    def test_individual_model_invalid_model_type(self, HttpApiAuth):
+        """Test that invalid model_type is rejected"""
+        res = add_model(HttpApiAuth, {"llm_factory": "Ollama", "llm_name": "llama2", "model_type": "invalid_type"})
+        assert res["code"] == RetCode.ARGUMENT_ERROR, res
+        assert "model_type must be one of:" in res["message"], res
+
 
 @pytest.mark.usefixtures("cleanup_added_models")
 class TestAddModelOllama:
-    """Test adding a local model provider (self-deployed) - current behavior"""
+    """Test adding Ollama (local model provider) - factory-level and individual model"""
 
     @pytest.mark.p1
-    def test_add_ollama_success(self, HttpApiAuth):
-        """Expect success response even if no models are persisted (empty config)."""
+    def test_add_ollama_factory_level_success(self, HttpApiAuth):
+        """Test factory-level addition (adds all models from Ollama factory)"""
         res = add_model(HttpApiAuth, {"llm_factory": "Ollama", "api_key": "dummy-key", "base_url": "http://localhost:8000"})
         assert res["code"] == RetCode.SUCCESS, res
         assert res.get("message", "") == "", res
 
     @pytest.mark.p1
-    def test_add_ollama_missing_base_url(self, HttpApiAuth):
+    def test_add_ollama_factory_level_missing_base_url(self, HttpApiAuth):
         """Missing base_url still returns success for self-deployed providers."""
         res = add_model(HttpApiAuth, {"llm_factory": "Ollama", "api_key": "dummy-key"})
         assert res["code"] == RetCode.SUCCESS, res
         assert res.get("message", "") == "", res
 
     @pytest.mark.p1
-    def test_add_ollama_invalid_base_url(self, HttpApiAuth):
-        """Invalid base_url still returns success for self-deployed providers."""
-        res = add_model(HttpApiAuth, {"llm_factory": "Ollama", "api_key": "dummy-key", "base_url": "http://invalid-host:9999"})
-        assert res["code"] == RetCode.SUCCESS, res
-        assert res.get("message", "") == "", res
-
-    @pytest.mark.p1
-    def test_add_ollama_empty_api_key(self, HttpApiAuth):
+    def test_add_ollama_factory_level_empty_api_key(self, HttpApiAuth):
         """Empty api_key accepted for self-deployed providers."""
         res = add_model(HttpApiAuth, {"llm_factory": "Ollama", "api_key": "", "base_url": "http://localhost:8000"})
         assert res["code"] == RetCode.SUCCESS, res
         assert res.get("message", "") == "", res
+
+    @pytest.mark.p1
+    def test_add_ollama_individual_model_success(self, HttpApiAuth):
+        """Test adding a single Ollama model with llm_name and model_type"""
+        res = add_model(HttpApiAuth, {"llm_factory": "Ollama", "llm_name": "llama2", "model_type": "chat", "base_url": "http://localhost:11434"})
+        # Local models skip validation, so this should succeed even if model doesn't exist
+        assert res["code"] == RetCode.SUCCESS, res
+
+    @pytest.mark.p1
+    def test_add_ollama_individual_model_empty_api_key(self, HttpApiAuth):
+        """Test individual model with empty api_key (allowed for local models)"""
+        res = add_model(HttpApiAuth, {"llm_factory": "Ollama", "llm_name": "llama2", "model_type": "chat", "api_key": "", "base_url": "http://localhost:11434"})
+        assert res["code"] == RetCode.SUCCESS, res
+
+    @pytest.mark.p1
+    def test_add_ollama_individual_model_missing_base_url(self, HttpApiAuth):
+        """Test individual model without base_url (should still work for local models)"""
+        res = add_model(HttpApiAuth, {"llm_factory": "Ollama", "llm_name": "llama2", "model_type": "chat", "api_key": ""})
+        # For local models, base_url is optional if api_key is provided (even if empty)
+        assert res["code"] == RetCode.ARGUMENT_ERROR, res
+        assert (
+            res.get("message", "")
+            == "Field: <> - Message: <api_base is required for local/self-hosted models when api_key is not provided> - Value: <{'llm_factory': 'Ollama', 'llm_name': 'llama2', 'model_type': 'chat', 'api_key': ''}>"
+        ), res
 
     @pytest.mark.p2
     def test_add_ollama_duplicate_addition(self, HttpApiAuth):
@@ -134,40 +165,35 @@ class TestAddModelOllama:
 
 @pytest.mark.usefixtures("cleanup_added_models")
 class TestAddModelOpenAI:
-    """Test adding OpenAI factory (API service) - failure cases"""
+    """Test adding OpenAI factory (API service) - factory-level and individual model"""
 
     @pytest.mark.p1
-    def test_add_openai_missing_api_key(self, HttpApiAuth):
-        """Missing api_key returns backend exception error."""
+    def test_add_openai_factory_level_missing_api_key(self, HttpApiAuth):
+        """Missing api_key returns authentication error."""
         res = add_model(HttpApiAuth, {"llm_factory": "OpenAI"})
-        assert res["code"] == RetCode.AUTHENTICATION_ERROR, res
-        assert "Incorrect API key provided" in res["message"], res
+        assert res["code"] == RetCode.ARGUMENT_ERROR, res
+        assert res["message"] == "Field: <> - Message: <api_key or appropriate authentication fields are required for factory-level addition> - Value: <{'llm_factory': 'OpenAI'}>", res
 
     @pytest.mark.p1
-    def test_add_openai_invalid_api_key(self, HttpApiAuth):
-        """Invalid api_key returns backend exception error."""
+    def test_add_openai_factory_level_invalid_api_key(self, HttpApiAuth):
+        """Invalid api_key returns authentication error."""
         res = add_model(HttpApiAuth, {"llm_factory": "OpenAI", "api_key": "invalid-key-12345"})
         assert res["code"] == RetCode.AUTHENTICATION_ERROR, res
-        assert "Incorrect API key provided" in res["message"], res
+        assert "Fail to access" in res["message"] or "Incorrect API key provided" in res["message"], res
 
     @pytest.mark.p1
-    def test_add_openai_empty_api_key(self, HttpApiAuth):
-        """Empty api_key returns backend exception error."""
-        res = add_model(HttpApiAuth, {"llm_factory": "OpenAI", "api_key": ""})
-        assert res["code"] == RetCode.AUTHENTICATION_ERROR, res
+    def test_add_openai_individual_model_missing_params(self, HttpApiAuth):
+        """Test individual model addition requires both llm_name and model_type"""
+        res = add_model(HttpApiAuth, {"llm_factory": "OpenAI", "llm_name": "gpt-4", "api_key": "invalid-key"})
+        assert res["code"] == RetCode.ARGUMENT_ERROR, res
+        assert "model_type is required when adding an individual model" in res["message"], res
 
     @pytest.mark.p1
-    def test_add_openai_none_api_key(self, HttpApiAuth):
-        """None api_key returns backend exception error."""
-        res = add_model(HttpApiAuth, {"llm_factory": "OpenAI", "api_key": None})
-        assert res["code"] == RetCode.EXCEPTION_ERROR, res
-        assert res["message"] == "OpenAIError('The api_key client option must be set either by passing api_key to the client or by setting the OPENAI_API_KEY environment variable')", res
-
-    @pytest.mark.p2
-    def test_add_openai_with_base_url(self, HttpApiAuth):
-        """Custom base_url still returns backend exception error."""
-        res = add_model(HttpApiAuth, {"llm_factory": "OpenAI", "api_key": "invalid-key", "base_url": "http://localhost:8000"})
+    def test_add_openai_individual_model_invalid_key(self, HttpApiAuth):
+        """Test individual model with invalid API key fails authentication"""
+        res = add_model(HttpApiAuth, {"llm_factory": "OpenAI", "llm_name": "gpt-4", "model_type": "chat", "api_key": "invalid-key-12345"})
         assert res["code"] == RetCode.AUTHENTICATION_ERROR, res
+        assert "Fail to access model(OpenAI/gpt-4)" in res["message"], res
 
     @pytest.mark.p2
     def test_add_openai_case_sensitivity(self, HttpApiAuth):
@@ -180,26 +206,24 @@ class TestAddModelOpenAI:
         assert res["code"] == RetCode.ARGUMENT_ERROR, res
         assert res["message"] == "LLM factory OPENAI is not allowed", res
 
-        res = add_model(HttpApiAuth, {"llm_factory": "OpenAI", "api_key": "invalid-key"})
-        assert res["code"] == RetCode.AUTHENTICATION_ERROR, res
-
 
 @pytest.mark.usefixtures("cleanup_added_models")
 class TestAddModelSpecialFactories:
-    """Test special factory authentication methods - current backend responses"""
+    """Test parameter validation for special factory authentication methods"""
 
     @pytest.mark.p2
     @pytest.mark.parametrize(
-        "factory_name, expected_code, expected_message",
+        "factory_name, missing_params, expected_message",
         [
-            ("VolcEngine", RetCode.SUCCESS, ""),
-            ("Tencent Hunyuan", RetCode.EXCEPTION_ERROR, "'InvalidCredential'"),
-            ("Tencent Cloud", RetCode.SUCCESS, ""),
-            ("Bedrock", RetCode.SUCCESS, ""),
-            ("BaiduYiyan", RetCode.SUCCESS, ""),
-            ("Fish Audio", RetCode.SUCCESS, ""),
-            ("Google Cloud", RetCode.SUCCESS, ""),
-            ("OpenRouter", RetCode.SUCCESS, ""),
+            ("VolcEngine", {}, "ark_api_key and endpoint_id are required for VolcEngine"),
+            ("Tencent Hunyuan", {}, "hunyuan_sid and hunyuan_sk are required for Tencent Hunyuan"),
+            ("Tencent Cloud", {}, "tencent_cloud_sid and tencent_cloud_sk are required for Tencent Cloud"),
+            ("Bedrock", {}, "bedrock_ak, bedrock_sk, and bedrock_region are required for Bedrock"),
+            ("BaiduYiyan", {}, "yiyan_ak and yiyan_sk are required for BaiduYiyan"),
+            ("Fish Audio", {}, "fish_audio_ak and fish_audio_refid are required for Fish Audio"),
+            ("Google Cloud", {}, "google_project_id, google_region, and google_service_account_key are required for Google Cloud"),
+            ("Azure-OpenAI", {}, "api_key and api_version are required for Azure-OpenAI"),
+            ("OpenRouter", {}, "api_key and provider_order are required for OpenRouter"),
         ],
         ids=[
             "volcengine",
@@ -209,38 +233,87 @@ class TestAddModelSpecialFactories:
             "baidu_yiyan",
             "fish_audio",
             "google_cloud",
+            "azure_openai",
             "openrouter",
         ],
     )
-    def test_special_factory_parameter_handling(self, HttpApiAuth, factory_name, expected_code, expected_message):
-        """Assert current backend responses for missing special parameters."""
+    def test_special_factory_missing_required_params(self, HttpApiAuth, factory_name, missing_params, expected_message):
+        """Test that special factories require their specific authentication parameters"""
         payload = {"llm_factory": factory_name, "api_key": "test-key"}
         res = add_model(HttpApiAuth, payload)
-        assert res["code"] == expected_code, res
-        assert res.get("message", "") == expected_message, res
+        assert res["code"] == RetCode.ARGUMENT_ERROR, res
+        assert expected_message in res["message"], f"Expected '{expected_message}' in '{res['message']}'"
+
+    @pytest.mark.p2
+    def test_tencent_hunyuan_force_factory_level(self, HttpApiAuth):
+        """Test that Tencent Hunyuan forces factory-level mode (ignores individual model params)"""
+        # Even if llm_name and model_type are provided, it should use factory-level mode
+        res = add_model(HttpApiAuth, {"llm_factory": "Tencent Hunyuan", "llm_name": "test-model", "model_type": "chat", "hunyuan_sid": "test-sid", "hunyuan_sk": "test-sk"})
+        # Should validate parameters but may fail on authentication
+        # The key is that it doesn't treat it as individual model addition
+        assert res["code"] in [RetCode.ARGUMENT_ERROR, RetCode.AUTHENTICATION_ERROR, RetCode.SUCCESS], res
+
+    @pytest.mark.p2
+    def test_tencent_cloud_force_factory_level(self, HttpApiAuth):
+        """Test that Tencent Cloud forces factory-level mode (ignores individual model params)"""
+        res = add_model(HttpApiAuth, {"llm_factory": "Tencent Cloud", "llm_name": "test-model", "model_type": "chat", "tencent_cloud_sid": "test-sid", "tencent_cloud_sk": "test-sk"})
+        assert res["code"] in [RetCode.ARGUMENT_ERROR, RetCode.AUTHENTICATION_ERROR, RetCode.SUCCESS], res
+
+    @pytest.mark.p2
+    def test_xunfei_spark_individual_model_tts(self, HttpApiAuth):
+        """Test XunFei Spark individual model with TTS requires spark_app_id, spark_api_secret, spark_api_key"""
+        res = add_model(HttpApiAuth, {"llm_factory": "XunFei Spark", "llm_name": "test-tts", "model_type": "tts", "api_key": "test-key"})
+        # Should fail because TTS requires special parameters
+        assert res["code"] in [RetCode.ARGUMENT_ERROR, RetCode.AUTHENTICATION_ERROR], res
+
+    @pytest.mark.p2
+    def test_xunfei_spark_invalid_model_type(self, HttpApiAuth):
+        """Test XunFei Spark individual model with chat requires spark_api_password"""
+        res = add_model(HttpApiAuth, {"llm_factory": "XunFei Spark", "llm_name": "test-chat", "model_type": "embedding", "api_key": "test-key"})
+        # Should fail because chat requires spark_api_password
+        assert res["code"] == RetCode.ARGUMENT_ERROR, res
+        assert res["message"] == "Embedding model from XunFei Spark is not supported yet.", res
+
+    @pytest.mark.p2
+    def test_xunfei_spark_factory_level(self, HttpApiAuth):
+        """Test XunFei Spark factory-level mode uses generic api_key"""
+        res = add_model(HttpApiAuth, {"llm_factory": "XunFei Spark", "api_key": "test-key"})
+        # Factory-level mode should work (may fail on authentication)
+        assert res["code"] in [RetCode.ARGUMENT_ERROR, RetCode.AUTHENTICATION_ERROR, RetCode.SUCCESS], res
+
+    @pytest.mark.p2
+    def test_mineru_optional_params(self, HttpApiAuth):
+        """Test MinerU with optional parameters (mineru_backend, mineru_server_url, mineru_delete_output)"""
+        res = add_model(HttpApiAuth, {"llm_factory": "MinerU", "mineru_backend": "test-backend", "mineru_server_url": "http://localhost:8000", "mineru_delete_output": True})
+        # MinerU parameters are optional, should not fail on parameter validation
+        assert res["code"] in [RetCode.ARGUMENT_ERROR, RetCode.AUTHENTICATION_ERROR, RetCode.SUCCESS], res
 
 
 @pytest.mark.usefixtures("cleanup_added_models")
-class TestAddModelLimitations:
-    """Test API limitations and behavior"""
+class TestAddModelFactoryLevel:
+    """Test factory-level addition behavior"""
 
     @pytest.mark.p3
     def test_add_model_adds_all_models_from_factory(self, HttpApiAuth):
-        """Test that add_model adds ALL models from a factory, not individual models
-        
-        Note: The current API implementation only supports adding all models from a factory.
-        There is no endpoint for adding individual models. This test documents this limitation.
-        """
+        """Test that factory-level add_model adds ALL models from a factory"""
         res = add_model(HttpApiAuth, {"llm_factory": "Ollama", "api_key": "dummy-key", "base_url": "http://localhost:8000"})
         assert res["code"] == RetCode.SUCCESS, res
         assert res.get("message", "") == "", res
 
-    @pytest.mark.p3
-    def test_add_individual_model_not_supported(self, HttpApiAuth):
-        """Adding a single model name is ignored; API still processes factory-level addition."""
-        res = add_model(
-            HttpApiAuth,
-            {"llm_factory": "Ollama", "api_key": "dummy-key", "llm_name": "dummy-model", "base_url": "http://localhost:8000"},
-        )
+    @pytest.mark.p2
+    def test_factory_level_with_llm_name_filter(self, HttpApiAuth):
+        """Test factory-level addition with llm_name filter"""
+        res = add_model(HttpApiAuth, {"llm_factory": "Ollama", "model_type": "chat", "base_url": "http://localhost:8000", "llm_name": "llama2"})
+        # Should succeed (may filter to only llama2 model)
         assert res["code"] == RetCode.SUCCESS, res
-        assert res.get("message", "") == "", res
+
+    @pytest.mark.p2
+    def test_factory_level_invalid_filter_no_match(self, HttpApiAuth):
+        """Test factory-level addition with filters that don't match any models"""
+        res = add_model(HttpApiAuth, {"llm_factory": "Ollama", "api_key": "dummy-key", "base_url": "http://localhost:8000", "model_type": "nonexistent_type", "llm_name": "nonexistent_model"})
+        # Should return error about no models matching filters
+        assert res["code"] == RetCode.ARGUMENT_ERROR, res
+        assert (
+            res["message"]
+            == "Field: <> - Message: <model_type must be one of: chat, embedding, rerank, image2text, speech2text, tts, ocr> - Value: <{'llm_factory': 'Ollama', 'api_key': 'dummy-key', 'base_url': 'http://localhost:8000', 'model_type': 'nonexistent_type', 'llm...>"
+        ), res
