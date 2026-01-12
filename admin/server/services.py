@@ -15,13 +15,17 @@
 #
 import logging
 import re
+from typing import Any
+
 from werkzeug.security import check_password_hash
 from common.constants import ActiveEnum
 from api.db.services import UserService
 from api.db.joint_services.user_account_service import create_new_user, delete_user_data
 from api.db.services.canvas_service import UserCanvasService
-from api.db.services.user_service import TenantService
+from api.db.services.user_service import TenantService, UserTenantService
 from api.db.services.knowledgebase_service import KnowledgebaseService
+from api.db.services.api_service import APITokenService
+from api.db.db_models import APIToken
 from api.utils.crypt import decrypt
 from api.utils import health_utils
 
@@ -135,6 +139,49 @@ class UserMgr:
         UserService.update_user(usr.id, {"is_active": target_status})
         return f"Turn {_activate_status} user activate status successfully!"
 
+    @staticmethod
+    def get_user_api_key(username: str) -> list[dict[str, Any]]:
+        # use email to find user. check exist and unique.
+        user_list: list[Any] = UserService.query_user_by_email(username)
+        if not user_list:
+            raise UserNotFoundError(username)
+        elif len(user_list) > 1:
+            raise AdminException(f"More than one user with username '{username}' found!")
+
+        usr: Any = user_list[0]
+        # tenant_id is typically the same as user_id for the owner tenant
+        tenant_id: str = usr.id
+
+        # Query all API tokens for this tenant
+        api_tokens: Any = APITokenService.query(tenant_id=tenant_id)
+
+        result: list[dict[str, Any]] = []
+        for token_obj in api_tokens:
+            result.append(token_obj.to_dict())
+
+        return result
+
+    @staticmethod
+    def save_api_token(api_token: dict[str, Any]) -> bool:
+        return APITokenService.save(**api_token)
+
+    @staticmethod
+    def delete_api_token(username: str, token: str) -> bool:
+        # use email to find user. check exist and unique.
+        user_list: list[Any] = UserService.query_user_by_email(username)
+        if not user_list:
+            raise UserNotFoundError(username)
+        elif len(user_list) > 1:
+            raise AdminException(f"Exist more than 1 user: {username}!")
+
+        usr: Any = user_list[0]
+        # tenant_id is typically the same as user_id for the owner tenant
+        tenant_id: str = usr.id
+
+        # Delete the API token
+        deleted_count: int = APITokenService.filter_delete([APIToken.tenant_id == tenant_id, APIToken.token == token])
+        return deleted_count > 0
+
 
 class UserServiceMgr:
 
@@ -173,6 +220,16 @@ class UserServiceMgr:
             'canvas_category': r['canvas_category'].split('_')[0],
             'avatar': r['avatar']
         } for r in res]
+
+    @staticmethod
+    def get_user_tenants(email: str) -> list[dict[str, Any]]:
+        users: list[Any] = UserService.query_user_by_email(email)
+        if not users:
+            raise UserNotFoundError(email)
+        user: Any = users[0]
+
+        tenants: list[dict[str, Any]] = UserTenantService.get_tenants_by_user_id(user.id)
+        return tenants
 
 
 class ServiceMgr:

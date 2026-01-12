@@ -15,8 +15,11 @@
 #
 
 import secrets
+from typing import Any
 
-from flask import Blueprint, request
+from common.time_utils import current_timestamp, datetime_format
+from datetime import datetime
+from flask import Blueprint, Response, request
 from flask_login import current_user, login_required, logout_user
 
 from auth import login_verify, login_admin, check_admin_auth
@@ -25,6 +28,7 @@ from services import UserMgr, ServiceMgr, UserServiceMgr
 from roles import RoleMgr
 from api.common.exceptions import AdminException
 from common.versions import get_ragflow_version
+from api.utils.api_utils import generate_confirmation_token
 
 admin_bp = Blueprint('admin', __name__, url_prefix='/api/v1/admin')
 
@@ -370,6 +374,68 @@ def get_user_permission(user_name: str):
         return success_response(res)
     except Exception as e:
         return error_response(str(e), 500)
+
+
+@admin_bp.route("/users/<username>/new_token", methods=["POST"])
+@login_required
+@check_admin_auth
+def generate_user_api_key(username: str) -> tuple[Response, int]:
+    try:
+        user_details: list[dict[str, Any]] = UserMgr.get_user_details(username)
+        if not user_details:
+            return error_response("User not found!", 404)
+        tenants: list[dict[str, Any]] = UserServiceMgr.get_user_tenants(username)
+        if not tenants:
+            return error_response("Tenant not found!", 404)
+        tenant_id: str = tenants[0]["tenant_id"]
+        token: str = generate_confirmation_token()
+        obj: dict[str, Any] = {
+            "tenant_id": tenant_id,
+            "token": token,
+            "beta": generate_confirmation_token().replace("ragflow-", "")[:32],
+            "create_time": current_timestamp(),
+            "create_date": datetime_format(datetime.now()),
+            "update_time": None,
+            "update_date": None,
+        }
+
+        if not UserMgr.save_api_token(obj):
+            return error_response("Failed to generate API key!", 500)
+        return success_response(obj, "API key generated successfully")
+    except AdminException as e:
+        return error_response(e.message, e.code)
+    except Exception as e:
+        return error_response(str(e), 500)
+
+
+@admin_bp.route("/users/<username>/token_list", methods=["GET"])
+@login_required
+@check_admin_auth
+def get_user_api_keys(username: str) -> tuple[Response, int]:
+    try:
+        api_keys: list[dict[str, Any]] = UserMgr.get_user_api_key(username)
+        return success_response(api_keys, "Get user API keys")
+    except AdminException as e:
+        return error_response(e.message, e.code)
+    except Exception as e:
+        return error_response(str(e), 500)
+
+
+@admin_bp.route("/users/<username>/token/<token>", methods=["DELETE"])
+@login_required
+@check_admin_auth
+def delete_user_api_key(username: str, token: str) -> tuple[Response, int]:
+    try:
+        deleted = UserMgr.delete_api_token(username, token)
+        if deleted:
+            return success_response(None, "API key deleted successfully")
+        else:
+            return error_response("API key not found or could not be deleted", 404)
+    except AdminException as e:
+        return error_response(e.message, e.code)
+    except Exception as e:
+        return error_response(str(e), 500)
+
 
 @admin_bp.route('/version', methods=['GET'])
 @login_required
