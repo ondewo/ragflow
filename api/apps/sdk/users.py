@@ -319,6 +319,29 @@ async def add_model(tenant_id: str) -> Response:
     if factory not in [f.name for f in get_allowed_llm_factories()]:
         return get_error_argument_result(f"LLM factory {factory} is not allowed")
 
+    # Helper function to validate required fields are present and non-empty
+    def validate_required_fields(field_names: List[str], factory_name: str) -> Optional[str]:
+        """
+        Validate that required fields are present and non-empty (after stripping whitespace).
+
+        Args:
+            field_names: List of field names to validate
+            factory_name: Name of the factory (for error messages)
+
+        Returns:
+            Error message string if validation fails, None if validation passes
+        """
+        missing_fields = []
+        for field_name in field_names:
+            value = req.get(field_name)
+            if not value or (isinstance(value, str) and not value.strip()):
+                missing_fields.append(field_name)
+
+        if missing_fields:
+            fields_str = ", ".join(missing_fields)
+            return f"{fields_str} are required for {factory_name}"
+        return None
+
     # Handle special factory authentication methods
     def apikey_json(keys: List[str]) -> str:
         nonlocal req
@@ -328,49 +351,146 @@ async def add_model(tenant_id: str) -> Response:
     api_key: str = "x"
     provided_api_key = req.get("api_key")
 
+    # Determine if this is individual model addition or factory-level addition
+    # We need to determine this early to validate parameters correctly
+    is_individual_model: bool = llm_name is not None and model_type is not None
+
+    # Validate required parameters BEFORE assembling API keys
+    # This ensures we catch missing parameters early rather than creating JSON with empty values
+
     # Tencent Hunyuan and Tencent Cloud always use factory-level addition (like set_api_key)
     # They delegate to set_api_key behavior, so we handle them specially
     if factory == "Tencent Hunyuan":
+        # Validate required fields before assembling
+        err_msg = validate_required_fields(["hunyuan_sid", "hunyuan_sk"], "Tencent Hunyuan")
+        if err_msg:
+            return get_error_argument_result(err_msg)
         api_key = apikey_json(["hunyuan_sid", "hunyuan_sk"])
         # Force factory-level mode for these factories
         llm_name = None
         model_type = None
+        is_individual_model = False
     elif factory == "Tencent Cloud":
+        # Validate required fields before assembling
+        err_msg = validate_required_fields(["tencent_cloud_sid", "tencent_cloud_sk"], "Tencent Cloud")
+        if err_msg:
+            return get_error_argument_result(err_msg)
         api_key = apikey_json(["tencent_cloud_sid", "tencent_cloud_sk"])
         # Force factory-level mode for these factories
         llm_name = None
         model_type = None
+        is_individual_model = False
     elif factory == "VolcEngine":
+        if is_individual_model:
+            # Individual model mode: validate required fields
+            err_msg = validate_required_fields(["ark_api_key", "endpoint_id"], "VolcEngine individual model addition")
+            if err_msg:
+                return get_error_argument_result(err_msg)
+        else:
+            # Factory-level mode: validate required fields
+            err_msg = validate_required_fields(["ark_api_key", "endpoint_id"], "VolcEngine")
+            if err_msg:
+                return get_error_argument_result(err_msg)
         api_key = apikey_json(["ark_api_key", "endpoint_id"])
     elif factory == "Bedrock":
+        if is_individual_model:
+            # Individual model mode: validate required fields (bedrock_ak, bedrock_sk, bedrock_region are required)
+            err_msg = validate_required_fields(["bedrock_ak", "bedrock_sk", "bedrock_region"], "Bedrock individual model addition")
+            if err_msg:
+                return get_error_argument_result(err_msg)
+        else:
+            # Factory-level mode: validate required fields (auth_mode and aws_role_arn are optional)
+            err_msg = validate_required_fields(["bedrock_ak", "bedrock_sk", "bedrock_region"], "Bedrock")
+            if err_msg:
+                return get_error_argument_result(err_msg)
         api_key = apikey_json(["auth_mode", "bedrock_ak", "bedrock_sk", "bedrock_region", "aws_role_arn"])
     elif factory == "BaiduYiyan":
+        if is_individual_model:
+            # Individual model mode: validate required fields
+            err_msg = validate_required_fields(["yiyan_ak", "yiyan_sk"], "BaiduYiyan individual model addition")
+            if err_msg:
+                return get_error_argument_result(err_msg)
+        else:
+            # Factory-level mode: validate required fields
+            err_msg = validate_required_fields(["yiyan_ak", "yiyan_sk"], "BaiduYiyan")
+            if err_msg:
+                return get_error_argument_result(err_msg)
         api_key = apikey_json(["yiyan_ak", "yiyan_sk"])
     elif factory == "Fish Audio":
+        if is_individual_model:
+            # Individual model mode: validate required fields
+            err_msg = validate_required_fields(["fish_audio_ak", "fish_audio_refid"], "Fish Audio individual model addition")
+            if err_msg:
+                return get_error_argument_result(err_msg)
+        else:
+            # Factory-level mode: validate required fields
+            err_msg = validate_required_fields(["fish_audio_ak", "fish_audio_refid"], "Fish Audio")
+            if err_msg:
+                return get_error_argument_result(err_msg)
         api_key = apikey_json(["fish_audio_ak", "fish_audio_refid"])
     elif factory == "Google Cloud":
+        if is_individual_model:
+            # Individual model mode: validate required fields
+            err_msg = validate_required_fields(["google_project_id", "google_region", "google_service_account_key"], "Google Cloud individual model addition")
+            if err_msg:
+                return get_error_argument_result(err_msg)
+        else:
+            # Factory-level mode: validate required fields
+            err_msg = validate_required_fields(["google_project_id", "google_region", "google_service_account_key"], "Google Cloud")
+            if err_msg:
+                return get_error_argument_result(err_msg)
         api_key = apikey_json(["google_project_id", "google_region", "google_service_account_key"])
     elif factory == "Azure-OpenAI":
+        if is_individual_model:
+            # Individual model mode: validate required fields
+            err_msg = validate_required_fields(["api_key", "api_version"], "Azure-OpenAI individual model addition")
+            if err_msg:
+                return get_error_argument_result(err_msg)
+        else:
+            # Factory-level mode: validate required fields
+            err_msg = validate_required_fields(["api_key", "api_version"], "Azure-OpenAI")
+            if err_msg:
+                return get_error_argument_result(err_msg)
         api_key = apikey_json(["api_key", "api_version"])
     elif factory == "OpenRouter":
+        if is_individual_model:
+            # Individual model mode: validate required fields
+            err_msg = validate_required_fields(["api_key", "provider_order"], "OpenRouter individual model addition")
+            if err_msg:
+                return get_error_argument_result(err_msg)
+        else:
+            # Factory-level mode: validate required fields
+            err_msg = validate_required_fields(["api_key", "provider_order"], "OpenRouter")
+            if err_msg:
+                return get_error_argument_result(err_msg)
         api_key = apikey_json(["api_key", "provider_order"])
     elif factory == "XunFei Spark":
-        if llm_name and model_type:
+        if is_individual_model:
             # Individual model mode
             if model_type == "tts":
                 # Validate required fields for XunFei Spark TTS
-                if not req.get("spark_app_id") or not req.get("spark_api_secret") or not req.get("spark_api_key"):
-                    return get_error_argument_result("spark_app_id, spark_api_secret, and spark_api_key are required for XunFei Spark TTS models")
+                err_msg = validate_required_fields(["spark_app_id", "spark_api_secret", "spark_api_key"], "XunFei Spark TTS models")
+                if err_msg:
+                    return get_error_argument_result(err_msg)
                 api_key = apikey_json(["spark_app_id", "spark_api_secret", "spark_api_key"])
             elif model_type == "chat":
+                # Validate required field for XunFei Spark chat
+                err_msg = validate_required_fields(["spark_api_password"], "XunFei Spark chat models")
+                if err_msg:
+                    return get_error_argument_result(err_msg)
                 api_key = req.get("spark_api_password", "")
             else:
+                # For other model types, use api_key if provided
                 api_key = req.get("api_key", "x")
         else:
-            # Factory-level mode
-            api_key = req.get("api_key", "x")
+            # Factory-level mode: api_key is required
+            if not provided_api_key or (isinstance(provided_api_key, str) and not provided_api_key.strip()):
+                return get_error_argument_result("api_key is required for XunFei Spark factory-level addition")
+            api_key = provided_api_key
     elif factory == "MinerU":
         # MinerU uses a special config structure (from web UI)
+        # Note: llm_app.py uses api_key + provider_order, but web UI and SDK use this structure
+        # This matches the web UI implementation
         mineru_config: Dict[str, Any] = {}
         if req.get("mineru_backend"):
             mineru_config["mineru_backend"] = req["mineru_backend"]
@@ -404,14 +524,11 @@ async def add_model(tenant_id: str) -> Response:
         "Builtin",
     ]
 
-    is_local = factory in LOCAL_FACTORIES
+    is_local: bool = factory in LOCAL_FACTORIES
 
     # For local models, allow empty api_key (treat "x" as empty/default)
     if is_local and (not api_key or api_key == "x"):
         api_key = ""
-
-    # Determine if this is individual model addition or factory-level addition
-    is_individual_model = llm_name is not None and model_type is not None
 
     # Additional validation: if one is provided, both must be provided for individual model mode
     # (This is also validated by Pydantic, but adding explicit check for clarity)
@@ -420,6 +537,17 @@ async def add_model(tenant_id: str) -> Response:
 
     # Individual model addition mode
     if is_individual_model:
+        # Validate llm_name is present and non-empty (required for all individual models)
+        if not llm_name or not llm_name.strip():
+            return get_error_argument_result("llm_name is required and cannot be empty for individual model addition")
+
+        # Validate model_type is present and non-empty (required for all individual models)
+        if not model_type or not model_type.strip():
+            return get_error_argument_result("model_type is required and cannot be empty for individual model addition")
+
+        # Note: Factory-specific parameter validation (for special auth fields) is done above
+        # before apikey_json calls, ensuring we catch missing parameters early
+
         # Process model name for local factories
         processed_llm_name = llm_name
         if factory == "LocalAI":
@@ -561,6 +689,16 @@ async def add_model(tenant_id: str) -> Response:
 
     # Factory-level addition mode (like set_api_key)
     else:
+        # Validate required parameters for factory-level mode (before API key testing)
+        # Note: Special factories (VolcEngine, Bedrock, BaiduYiyan, Fish Audio, Google Cloud,
+        # Azure-OpenAI, OpenRouter, XunFei Spark, Tencent Hunyuan, Tencent Cloud) are already
+        # validated above before apikey_json calls. For other non-local factories, api_key is required.
+        if factory not in ["Tencent Hunyuan", "Tencent Cloud", "VolcEngine", "Bedrock", "BaiduYiyan", "Fish Audio", "Google Cloud", "Azure-OpenAI", "OpenRouter", "XunFei Spark"]:
+            if not is_local:
+                # For non-local factories that don't use special auth, api_key is required
+                if not provided_api_key or (isinstance(provided_api_key, str) and not provided_api_key.strip()):
+                    return get_error_argument_result("api_key is required for factory-level addition")
+
         # Test if API key works (skip for self-deployed)
         chat_passed: bool = False
         embd_passed: bool = False

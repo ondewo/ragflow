@@ -831,6 +831,36 @@ class AddModelReq(Base):
             if is_local and not self.api_base and not self.api_key:
                 raise PydanticCustomError("field_required", "api_base is required for local/self-hosted models when api_key is not provided")
 
+            # For individual model mode, validate factory-specific required parameters
+            if self.llm_factory == "VolcEngine":
+                if not self.ark_api_key or not self.endpoint_id:
+                    raise PydanticCustomError("field_required", "ark_api_key and endpoint_id are required for VolcEngine individual model addition")
+            elif self.llm_factory == "Bedrock":
+                if not self.bedrock_ak or not self.bedrock_sk or not self.bedrock_region:
+                    raise PydanticCustomError("field_required", "bedrock_ak, bedrock_sk, and bedrock_region are required for Bedrock individual model addition")
+            elif self.llm_factory == "BaiduYiyan":
+                if not self.yiyan_ak or not self.yiyan_sk:
+                    raise PydanticCustomError("field_required", "yiyan_ak and yiyan_sk are required for BaiduYiyan individual model addition")
+            elif self.llm_factory == "Fish Audio":
+                if not self.fish_audio_ak or not self.fish_audio_refid:
+                    raise PydanticCustomError("field_required", "fish_audio_ak and fish_audio_refid are required for Fish Audio individual model addition")
+            elif self.llm_factory == "Google Cloud":
+                if not self.google_project_id or not self.google_region or not self.google_service_account_key:
+                    raise PydanticCustomError("field_required", "google_project_id, google_region, and google_service_account_key are required for Google Cloud individual model addition")
+            elif self.llm_factory == "Azure-OpenAI":
+                if not self.api_key or not self.api_version:
+                    raise PydanticCustomError("field_required", "api_key and api_version are required for Azure-OpenAI individual model addition")
+            elif self.llm_factory == "OpenRouter":
+                if not self.api_key or not self.provider_order:
+                    raise PydanticCustomError("field_required", "api_key and provider_order are required for OpenRouter individual model addition")
+            elif self.llm_factory == "XunFei Spark":
+                if self.model_type == "chat":
+                    if not self.spark_api_password:
+                        raise PydanticCustomError("field_required", "spark_api_password is required for XunFei Spark chat models")
+                elif self.model_type == "tts":
+                    if not self.spark_app_id or not self.spark_api_secret or not self.spark_api_key:
+                        raise PydanticCustomError("field_required", "spark_app_id, spark_api_secret, and spark_api_key are required for XunFei Spark TTS models")
+
         # Factory-level addition mode
         else:
             # Validate special factory authentication requirements
@@ -844,6 +874,8 @@ class AddModelReq(Base):
                 if not self.tencent_cloud_sid or not self.tencent_cloud_sk:
                     raise PydanticCustomError("field_required", "tencent_cloud_sid and tencent_cloud_sk are required for Tencent Cloud")
             elif self.llm_factory == "Bedrock":
+                # Required: bedrock_ak, bedrock_sk, bedrock_region
+                # Optional: auth_mode, aws_role_arn (included in JSON but may be empty)
                 if not self.bedrock_ak or not self.bedrock_sk or not self.bedrock_region:
                     raise PydanticCustomError("field_required", "bedrock_ak, bedrock_sk, and bedrock_region are required for Bedrock")
             elif self.llm_factory == "BaiduYiyan":
