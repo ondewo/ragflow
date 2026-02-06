@@ -13,9 +13,12 @@
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
 #
+import sys
+from pathlib import Path
 
 import pytest
 import requests
+
 from configs import EMAIL, HOST_ADDRESS, PASSWORD, VERSION, ZHIPU_AI_API_KEY
 
 MARKER_EXPRESSIONS = {
@@ -110,6 +113,7 @@ def add_models(auth):
     models_info = {
         "ZHIPU-AI": {"llm_factory": "ZHIPU-AI", "api_key": ZHIPU_AI_API_KEY},
     }
+    return
 
     for name, model_info in models_info.items():
         if not get_my_llms(auth, name):
@@ -131,11 +135,12 @@ def get_tenant_info(auth):
 
 @pytest.fixture(scope="session", autouse=True)
 def set_tenant_info(auth):
+    tenant_id = None
     try:
         add_models(auth)
         tenant_id = get_tenant_info(auth)
     except Exception as e:
-        return # pytest.exit(f"Error in set_tenant_info: {str(e)}")
+        pytest.exit(f"Error in set_tenant_info: {str(e)}")
     url = HOST_ADDRESS + f"/{VERSION}/user/set_tenant_info"
     authorization = {"Authorization": auth}
     tenant_info = {
@@ -150,3 +155,29 @@ def set_tenant_info(auth):
     res = response.json()
     if res.get("code") != 0:
         raise Exception(res.get("message"))
+
+
+@pytest.fixture(scope="session")
+def init_storage() -> None:
+    orig_sys_path = sys.path[:]
+    try:
+        sys.path.insert(0, str(Path(__file__).parents[2]))
+        if "common" in sys.modules:
+            del sys.modules["common"]
+        from common import settings, config_utils, constants
+
+        # already initialized
+        if settings.STORAGE_IMPL:
+            return
+
+        if settings.STORAGE_IMPL_TYPE == "AWS_S3":
+            settings.S3 = config_utils.get_base_config("s3", {})
+        elif settings.STORAGE_IMPL_TYPE == "MINIO":
+            settings.MINIO = config_utils.decrypt_database_config(name="minio")
+        else:
+            return
+
+        settings.STORAGE_IMPL = settings.StorageFactory.create(constants.Storage[settings.STORAGE_IMPL_TYPE])
+    finally:
+        sys.path = orig_sys_path
+        del sys.modules["common"]
