@@ -41,6 +41,18 @@ class RAGFlowS3:
         self.connect_timeout = self.s3_config.get("connect_timeout", None)
         self.read_timeout = self.s3_config.get("read_timeout", None)
         self.retries_max_attempts = self.s3_config.get("retries_max_attempts", None)
+        try:
+            self.connect_timeout = float(self.s3_config.get("connect_timeout", None))
+        except TypeError, ValueError:
+            self.connect_timeout = None
+        try:
+            self.read_timeout = self.s3_config.get("read_timeout", None)
+        except TypeError, ValueError:
+            self.read_timeout = None
+        try:
+            self.retries_max_attempts = int(self.s3_config.get("retries_max_attempts", None))
+        except TypeError, ValueError:
+            self.retries_max_attempts = None
         self.__open__()
 
     @staticmethod
