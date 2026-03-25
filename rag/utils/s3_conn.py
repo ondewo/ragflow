@@ -38,6 +38,9 @@ class RAGFlowS3:
         self.addressing_style = self.s3_config.get('addressing_style', None)
         self.bucket = self.s3_config.get('bucket', None)
         self.prefix_path = self.s3_config.get('prefix_path', None)
+        self.connect_timeout = self.s3_config.get('connect_timeout', None)
+        self.read_timeout = self.s3_config.get('read_timeout', None)
+        self.retries_max_attempts = self.s3_config.get('retries_max_attempts', None)
         self.__open__()
 
     @staticmethod
@@ -90,6 +93,14 @@ class RAGFlowS3:
             if self.addressing_style:
                 config_kwargs['s3'] = {'addressing_style': self.addressing_style}
 
+            # timeouts and retries
+            if self.connect_timeout:
+                config_kwargs['connect_timeout'] = self.connect_timeout
+            if self.read_timeout:
+                config_kwargs['read_timeout'] = self.read_timeout
+            if self.retries_max_attempts:
+                config_kwargs['retries'] = {'max_attempts': self.retries_max_attempts, 'mode': 'standard'}
+
             if config_kwargs:
                 s3_params['config'] = Config(**config_kwargs)
 
@@ -133,18 +144,16 @@ class RAGFlowS3:
     @use_default_bucket
     def put(self, bucket, fnm, binary, *args, **kwargs):
         logging.debug(f"bucket name {bucket}; filename :{fnm}:")
-        for _ in range(1):
-            try:
-                if not self.bucket_exists(bucket):
-                    self.conn[0].create_bucket(Bucket=bucket)
-                    logging.info(f"create bucket {bucket} ********")
-                r = self.conn[0].upload_fileobj(BytesIO(binary), bucket, fnm)
+        try:
+            if not self.bucket_exists(bucket):
+                self.conn[0].create_bucket(Bucket=bucket)
+                logging.info(f"create bucket {bucket} ********")
+            r = self.conn[0].upload_fileobj(BytesIO(binary), bucket, fnm)
 
-                return r
-            except Exception:
-                logging.exception(f"Fail put {bucket}/{fnm}")
-                self.__open__()
-                time.sleep(1)
+            return r
+        except Exception:
+            logging.exception(f"Fail put {bucket}/{fnm}")
+            self.__open__()
 
     @use_prefix_path
     @use_default_bucket
@@ -157,16 +166,13 @@ class RAGFlowS3:
     @use_prefix_path
     @use_default_bucket
     def get(self, bucket, fnm, *args, **kwargs):
-        for _ in range(1):
-            try:
-                r = self.conn[0].get_object(Bucket=bucket, Key=fnm)
-                object_data = r['Body'].read()
-                return object_data
-            except Exception:
-                logging.exception(f"fail get {bucket}/{fnm}")
-                self.__open__()
-                time.sleep(1)
-        return None
+        try:
+            r = self.conn[0].get_object(Bucket=bucket, Key=fnm)
+            object_data = r['Body'].read()
+            return object_data
+        except Exception:
+            logging.exception(f"fail get {bucket}/{fnm}")
+            self.__open__()
 
     @use_prefix_path
     @use_default_bucket

@@ -74,6 +74,9 @@ user_default_llm:
 #   prefix_path: 'prefix_path'
 #   signature_version: 'v4'
 #   addressing_style: 'path'
+#   connect_timeout: 15
+#   read_timeout: 10
+#   retries_max_attempts: 3
 # oss:
 #   access_key: '${ACCESS_KEY}'
 #   secret_key: '${SECRET_KEY}'
