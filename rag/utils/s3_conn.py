@@ -192,6 +192,7 @@ class RAGFlowS3:
         except Exception:
             logging.exception(f"Fail put {bucket}/{fnm}")
             self.__open__()
+            raise
 
     @use_default_bucket
     @use_prefix_path
@@ -211,6 +212,7 @@ class RAGFlowS3:
         except Exception:
             logging.exception(f"fail get {bucket}/{fnm}")
             self.__open__()
+            return None
 
     @use_default_bucket
     @use_prefix_path
