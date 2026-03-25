@@ -25,6 +25,7 @@ from quart import request, send_file
 from peewee import OperationalError
 from pydantic import BaseModel, Field, validator
 
+from common.misc_utils import thread_pool_exec
 from api.constants import FILE_NAME_LEN_LIMIT
 from api.db import FileType
 from api.db.db_models import APIToken, File, Task
@@ -160,7 +161,7 @@ async def upload(dataset_id, tenant_id):
     e, kb = KnowledgebaseService.get_by_id(dataset_id)
     if not e:
         raise LookupError(f"Can't find the dataset with ID {dataset_id}!")
-    err, files = FileService.upload_document(kb, file_objs, tenant_id, parent_path=form.get("parent_path"))
+    err, files = await thread_pool_exec(FileService.upload_document, kb, file_objs, tenant_id, parent_path=form.get("parent_path"))
     if err:
         return get_result(message="\n".join(err), code=RetCode.SERVER_ERROR)
     # rename key's name
@@ -406,7 +407,7 @@ async def download(tenant_id, dataset_id, document_id):
         return get_error_data_result(message=f"The dataset not own the document {document_id}.")
     # The process of downloading
     doc_id, doc_location = File2DocumentService.get_storage_address(doc_id=document_id)  # minio address
-    file_stream = settings.STORAGE_IMPL.get(doc_id, doc_location)
+    file_stream = await thread_pool_exec(settings.STORAGE_IMPL.get, doc_id, doc_location)
     if not file_stream:
         return construct_json_result(message="This file is empty.", code=RetCode.DATA_ERROR)
     file = BytesIO(file_stream)
@@ -428,7 +429,7 @@ async def download_doc(document_id):
     objs = APIToken.query(beta=token)
     if not objs:
         return get_error_data_result(message='Authentication error: API key is invalid!"')
-    
+
     if not document_id:
         return get_error_data_result(message="Specify document_id please.")
     doc = DocumentService.query(id=document_id)
@@ -436,7 +437,7 @@ async def download_doc(document_id):
         return get_error_data_result(message=f"The dataset not own the document {document_id}.")
     # The process of downloading
     doc_id, doc_location = File2DocumentService.get_storage_address(doc_id=document_id)  # minio address
-    file_stream = settings.STORAGE_IMPL.get(doc_id, doc_location)
+    file_stream = await thread_pool_exec(settings.STORAGE_IMPL.get, doc_id, doc_location)
     if not file_stream:
         return construct_json_result(message="This file is empty.", code=RetCode.DATA_ERROR)
     file = BytesIO(file_stream)
@@ -786,7 +787,7 @@ async def delete(tenant_id, dataset_id):
             )
             File2DocumentService.delete_by_document_id(doc_id)
 
-            settings.STORAGE_IMPL.rm(b, n)
+            await thread_pool_exec(settings.STORAGE_IMPL.rm, b, n)
             success_count += 1
         except Exception as e:
             errors += str(e)
