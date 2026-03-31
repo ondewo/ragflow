@@ -52,6 +52,17 @@ class RAGFlowS3:
             self.retries_max_attempts = None
         self.__open__()
 
+        # create bucket
+        if not self.bucket:
+            return
+
+        try:
+            if not self._physical_bucket_exists(self.bucket):
+                self.conn.create_bucket(Bucket=self.bucket)
+                logging.info(f"create bucket {self.bucket} ********")
+        except Exception as e:
+            logging.error("Could not create S3 bucket. Error: {}", e)
+
     @staticmethod
     def use_default_bucket(method):
         def wrapper(self, bucket, *args, **kwargs):
@@ -133,12 +144,12 @@ class RAGFlowS3:
             if config_kwargs:
                 s3_params["config"] = Config(**config_kwargs)
 
-            self.conn = [boto3.client("s3", **s3_params)]
+            self.conn = boto3.client("s3", **s3_params)
         except Exception:
             logging.exception(f"Fail to connect at region {self.region_name} or endpoint {self.endpoint_url}")
 
     def __close__(self):
-        del self.conn[0]
+        self.conn.close()
         self.conn = None
 
     @use_default_bucket
@@ -157,7 +168,7 @@ class RAGFlowS3:
                     return False
 
                 # Check if any objects exist with the prefix
-                return self.conn[0].list_objects_v2(Bucket=bucket, Prefix=prefix, MaxKeys=1).get("KeyCount", 0) > 0
+                return self.conn.list_objects_v2(Bucket=bucket, Prefix=prefix, MaxKeys=1).get("KeyCount", 0) > 0
             else:
                 # Multi-bucket mode: check physical bucket
                 return self._physical_bucket_exists(bucket)
@@ -168,7 +179,7 @@ class RAGFlowS3:
     def _physical_bucket_exists(self, bucket: str) -> bool:
         try:
             logging.debug(f"head_bucket bucketname {bucket}")
-            self.conn[0].head_bucket(Bucket=bucket)
+            self.conn.head_bucket(Bucket=bucket)
             return True
         except ClientError:
             logging.info(f"Bucket {bucket} does not exist")
@@ -176,7 +187,7 @@ class RAGFlowS3:
 
     def health(self):
         try:
-            self.conn[0].list_buckets(MaxBuckets=1)
+            self.conn.list_buckets(MaxBuckets=1)
             return True
         except Exception:
             return False
@@ -192,22 +203,16 @@ class RAGFlowS3:
     def put(self, bucket, fnm, binary, *args, **kwargs):
         logging.debug(f"bucket name {bucket}; filename :{fnm}:")
         try:
-            if not self._physical_bucket_exists(bucket):
-                self.conn[0].create_bucket(Bucket=bucket)
-                logging.info(f"create bucket {bucket} ********")
-            r = self.conn[0].upload_fileobj(BytesIO(binary), bucket, fnm)
-
-            return r
+            return self.conn.upload_fileobj(BytesIO(binary), bucket, fnm)
         except Exception:
             logging.exception(f"Fail put {bucket}/{fnm}")
-            self.__open__()
             raise
 
     @use_default_bucket
     @use_prefix_path
     def rm(self, bucket, fnm, *args, **kwargs):
         try:
-            self.conn[0].delete_object(Bucket=bucket, Key=fnm)
+            self.conn.delete_object(Bucket=bucket, Key=fnm)
         except Exception:
             logging.exception(f"Fail rm {bucket}/{fnm}")
 
@@ -215,19 +220,18 @@ class RAGFlowS3:
     @use_prefix_path
     def get(self, bucket, fnm, *args, **kwargs):
         try:
-            r = self.conn[0].get_object(Bucket=bucket, Key=fnm)
+            r = self.conn.get_object(Bucket=bucket, Key=fnm)
             object_data = r["Body"].read()
             return object_data
         except Exception:
             logging.exception(f"fail get {bucket}/{fnm}")
-            self.__open__()
             return None
 
     @use_default_bucket
     @use_prefix_path
     def obj_exist(self, bucket, fnm, *args, **kwargs):
         try:
-            if self.conn[0].head_object(Bucket=bucket, Key=fnm):
+            if self.conn.head_object(Bucket=bucket, Key=fnm):
                 return True
         except ClientError as e:
             if e.response["Error"]["Code"] == "404":
@@ -238,16 +242,10 @@ class RAGFlowS3:
     @use_default_bucket
     @use_prefix_path
     def get_presigned_url(self, bucket, fnm, expires, *args, **kwargs):
-        for _ in range(10):
-            try:
-                r = self.conn[0].generate_presigned_url("get_object", Params={"Bucket": bucket, "Key": fnm}, ExpiresIn=expires)
-
-                return r
-            except Exception:
-                logging.exception(f"fail get url {bucket}/{fnm}")
-                self.__open__()
-                time.sleep(1)
-        return None
+        try:
+            return self.conn.generate_presigned_url("get_object", Params={"Bucket": bucket, "Key": fnm}, ExpiresIn=expires)
+        except Exception:
+            logging.exception(f"fail get url {bucket}/{fnm}")
 
     @use_default_bucket
     def remove_bucket(self, bucket, **kwargs):
@@ -264,15 +262,15 @@ class RAGFlowS3:
 
         try:
             # delete all objects with the prefix
-            paginator = self.conn[0].get_paginator("list_objects_v2")
+            paginator = self.conn.get_paginator("list_objects_v2")
             for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
                 if "Contents" not in page:
                     continue
                 objects = [{"Key": obj["Key"]} for obj in page["Contents"]]
-                self.conn[0].delete_objects(Bucket=bucket, Delete={"Objects": objects})
+                self.conn.delete_objects(Bucket=bucket, Delete={"Objects": objects})
 
             # do NOT delete bucket in single bucket mode
             if not self.bucket:
-                self.conn[0].delete_bucket(Bucket=bucket)
+                self.conn.delete_bucket(Bucket=bucket)
         except Exception as e:
             logging.error(f"Fail to remove bucket {bucket}: {str(e)}")
