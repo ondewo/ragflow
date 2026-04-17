@@ -24,6 +24,7 @@ import copy
 from opensearchpy import OpenSearch, NotFoundError
 from opensearchpy import UpdateByQuery, Q, Search, Index
 from opensearchpy import ConnectionTimeout
+from opensearchpy.client import IndicesClient
 from common.decorator import singleton
 from common.file_utils import get_project_base_directory
 from common.doc_store.doc_store_base import DocStoreConnection, MatchExpr, OrderByExpr, MatchTextExpr, MatchDenseExpr, \
@@ -96,11 +97,34 @@ class OSConnection(DocStoreConnection):
         if self.index_exist(indexName, knowledgebaseId):
             return True
         try:
-            from opensearchpy.client import IndicesClient
             return IndicesClient(self.os).create(index=indexName,
                                                  body=self.mapping)
         except Exception:
             logger.exception("OSConnection.createIndex error %s" % (indexName))
+
+    def partial_update(self, index_name: str, doc_id: str, fields: dict, refresh: bool = False) -> bool:
+        self.os.update(index=index_name, id=doc_id, body={"doc": fields}, refresh=refresh)
+        return True
+
+    def create_doc_meta_idx(self, index_name: str):
+        """
+        Create a per-tenant document metadata index (ragflow_doc_meta_{tenant_id}).
+        Uses the ES mapping file — the `object` + `dynamic: true` shape is identical
+        for OpenSearch 2.x.
+        """
+        if self.index_exist(index_name, ""):
+            return True
+        try:
+            fp_mapping = os.path.join(get_project_base_directory(), "conf", "doc_meta_es_mapping.json")
+            if not os.path.exists(fp_mapping):
+                logger.error(f"Document metadata mapping file not found at {fp_mapping}")
+                return False
+            with open(fp_mapping, "r") as f:
+                doc_meta_mapping = json.load(f)
+            return IndicesClient(self.os).create(index=index_name, body=doc_meta_mapping)
+        except Exception as e:
+            logger.exception(f"Error creating document metadata index {index_name}: {e}")
+            return False
 
     def delete_idx(self, indexName: str, knowledgebaseId: str):
         if len(knowledgebaseId) > 0:

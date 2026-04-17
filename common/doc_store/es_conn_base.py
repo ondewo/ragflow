@@ -136,6 +136,10 @@ class ESConnectionBase(DocStoreConnection):
         except Exception:
             self.logger.exception("ESConnection.createIndex error %s" % index_name)
 
+    def partial_update(self, index_name: str, doc_id: str, fields: dict, refresh: bool = False) -> bool:
+        self.es.update(index=index_name, id=doc_id, doc=fields, refresh=refresh)
+        return True
+
     def create_doc_meta_idx(self, index_name: str):
         """
         Create a document metadata index.

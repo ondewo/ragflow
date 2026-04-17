@@ -228,6 +228,14 @@ class DocStoreConnection(ABC):
         """
         raise NotImplementedError("Not implemented")
 
+    def partial_update(self, index_name: str, doc_id: str, fields: dict, refresh: bool = False) -> bool:
+        """
+        Partially update a single document by id, merging `fields` into its _source.
+        Backends that cannot do efficient partial updates should leave this
+        unimplemented; callers are expected to fall back to delete+insert.
+        """
+        raise NotImplementedError("partial_update not supported by this backend")
+
     @abstractmethod
     def delete(self, condition: dict, index_name: str, dataset_id: str) -> int:
         """

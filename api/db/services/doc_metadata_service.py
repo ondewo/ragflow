@@ -312,14 +312,15 @@ class DocMetadataService:
             if result:
                 logging.error(f"Failed to insert metadata for document {doc_id}: {result}")
                 return False
-            # Force ES refresh to make metadata immediately available for search
-            if not settings.DOC_ENGINE_INFINITY:
+            # Force refresh to make metadata immediately available for search
+            client = getattr(settings.docStoreConn, "es", None) or getattr(settings.docStoreConn, "os", None)
+            if client is not None:
                 try:
-                    settings.docStoreConn.es.indices.refresh(index=index_name)
+                    client.indices.refresh(index=index_name)
                     logging.debug(f"Refreshed metadata index: {index_name}")
                 except Exception as e:
                     logging.warning(f"Failed to refresh metadata index {index_name}: {e}")
-            
+
             logging.debug(f"Successfully inserted metadata for document {doc_id}")
             return True
 
@@ -365,24 +366,20 @@ class DocMetadataService:
 
             logging.debug(f"[update_document_metadata] Updating doc_id: {doc_id}, kb_id: {kb_id}, meta_fields: {processed_meta}")
 
-            # For Elasticsearch, use efficient partial update
-            if not settings.DOC_ENGINE_INFINITY:
-                try:
-                    # Use ES partial update API - much more efficient than delete+insert
-                    settings.docStoreConn.es.update(
-                        index=index_name,
-                        id=doc_id,
-                        refresh=True,  # Make changes immediately visible
-                        doc={"meta_fields": processed_meta}
-                    )
-                    logging.debug(f"Successfully updated metadata for document {doc_id} using ES partial update")
+            # Try efficient partial update; backends that don't support it raise
+            # NotImplementedError and we fall through to delete+insert.
+            try:
+                if settings.docStoreConn.partial_update(
+                    index_name, doc_id, {"meta_fields": processed_meta}, refresh=True
+                ):
+                    logging.debug(f"Successfully updated metadata for document {doc_id} using partial update")
                     return True
-                except Exception as e:
-                    logging.error(f"ES partial update failed for document {doc_id}: {e}")
-                    # Fall back to delete+insert if partial update fails
-                    logging.info(f"Falling back to delete+insert for document {doc_id}")
+            except NotImplementedError:
+                pass
+            except Exception as e:
+                logging.error(f"Partial update failed for document {doc_id}: {e}")
+                logging.info(f"Falling back to delete+insert for document {doc_id}")
 
-            # For Infinity or as fallback: use delete+insert
             logging.debug(f"[update_document_metadata] Using delete+insert method for doc_id: {doc_id}")
             cls.delete_document_metadata(doc_id, skip_empty_check=True)
             return cls.insert_document_metadata(doc_id, processed_meta)
@@ -494,12 +491,15 @@ class DocMetadataService:
 
             logging.debug(f"[DROP EMPTY TABLE] Table {index_name} exists, checking if empty...")
 
-            # Use ES count API for accurate count
-            # Note: No need to refresh since delete operation already uses refresh=True
+            # Use ES/OpenSearch count API for accurate count.
+            # Note: No need to refresh since delete operation already uses refresh=True.
             try:
-                count_response = settings.docStoreConn.es.count(index=index_name)
+                client = getattr(settings.docStoreConn, "es", None) or getattr(settings.docStoreConn, "os", None)
+                if client is None:
+                    raise AttributeError("no raw search client on this backend")
+                count_response = client.count(index=index_name)
                 total_count = count_response['count']
-                logging.debug(f"[DROP EMPTY TABLE] ES count API result: {total_count} documents")
+                logging.debug(f"[DROP EMPTY TABLE] Count API result: {total_count} documents")
                 is_empty = (total_count == 0)
             except Exception as e:
                 logging.warning(f"[DROP EMPTY TABLE] Count API failed, falling back to search: {e}")
