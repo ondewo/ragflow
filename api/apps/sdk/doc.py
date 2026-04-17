@@ -356,6 +356,7 @@ async def update_doc(tenant_id, dataset_id, document_id):
         renamed_doc[new_key] = value
         if key == "run":
             renamed_doc["run"] = run_mapping.get(str(value))
+    renamed_doc["meta_fields"] = DocMetadataService.get_document_metadata(doc.id)
 
     return get_result(data=renamed_doc)
 
