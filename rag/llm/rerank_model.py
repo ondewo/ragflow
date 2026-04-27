@@ -39,18 +39,16 @@ class Base(ABC):
     @staticmethod
     def _normalize_rank(rank: np.ndarray) -> np.ndarray:
         """
-        Normalize rank values to the range 0 to 1.
-        Avoids division by zero if all ranks are identical.
+        Clip rank values to the [0, 1] range expected by downstream scoring.
+
+        Reranker backends (Cohere, Jina, Voyage, Qwen, OpenAI-API-compatible
+        sigmoid heads, etc.) already emit per-document scores on an absolute
+        [0, 1] scale, so per-query min-max rescaling would discard absolute
+        information: the top hit would always become 1.0 and the worst always
+        0.0, making `similarity_threshold` meaningless and collapsing the
+        single-candidate case to 0.0.
         """
-        min_rank = np.min(rank)
-        max_rank = np.max(rank)
-
-        if not np.isclose(min_rank, max_rank, atol=1e-3):
-            rank = (rank - min_rank) / (max_rank - min_rank)
-        else:
-            rank = np.zeros_like(rank)
-
-        return rank
+        return np.clip(rank, 0.0, 1.0)
 
 
 class JinaRerank(Base):
