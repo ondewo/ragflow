@@ -32,6 +32,7 @@ from pydantic_core import PydanticCustomError
 from werkzeug.exceptions import BadRequest, UnsupportedMediaType
 
 from api.constants import DATASET_NAME_LIMIT
+from common.constants import LLMType
 
 
 async def validate_and_parse_json_request(request: Request, validator: type[BaseModel], *, extras: dict[str, Any] | None = None, exclude_unset: bool = False) -> tuple[dict[str, Any] | None, str | None]:
@@ -725,3 +726,39 @@ class BaseListReq(BaseModel):
 
 
 class ListDatasetReq(BaseListReq): ...
+
+
+class _ModelReqBase(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True, protected_namespaces=())
+
+
+class AddModelReq(_ModelReqBase):
+    model_type: Annotated[Literal[LLMType.CHAT, LLMType.EMBEDDING, LLMType.RERANK], Field(...)]
+    model_name: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=128), Field(...)]
+    base_url: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=255), Field(...)]
+    api_key: Annotated[str | None, Field(default=None, max_length=8192)]
+    max_tokens: Annotated[int | None, Field(default=None, ge=1)]
+
+    @field_validator("model_name", mode="after")
+    @classmethod
+    def _no_internal_suffix(cls, v: str) -> str:
+        if "___" in v or "@" in v:
+            raise PydanticCustomError("invalid_model_name", "model_name cannot contain '___' or '@'")
+        return v
+
+
+class UpdateModelReq(_ModelReqBase):
+    model_name: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=128), Field(...)]
+    base_url: Annotated[str | None, StringConstraints(strip_whitespace=True, min_length=1, max_length=255), Field(default=None)]
+    api_key: Annotated[str | None, Field(default=None, max_length=8192)]
+    max_tokens: Annotated[int | None, Field(default=None, ge=1)]
+
+
+class DeleteModelReq(_ModelReqBase):
+    model_name: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=128), Field(...)]
+
+
+class SetDefaultModelsReq(_ModelReqBase):
+    llm: Annotated[str | None, Field(default=None, max_length=128)]
+    embedding: Annotated[str | None, Field(default=None, max_length=128)]
+    rerank: Annotated[str | None, Field(default=None, max_length=128)]
