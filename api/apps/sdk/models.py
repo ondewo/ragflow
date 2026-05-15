@@ -45,18 +45,28 @@ _FACTORY = "OpenAI-API-Compatible"
 _NAME_SUFFIX = "___OpenAI-API"
 
 _DEFAULT_COLUMN = {
-    "llm": ("llm_id", LLMType.CHAT.value),
+    "chat": ("llm_id", LLMType.CHAT.value),
     "embedding": ("embd_id", LLMType.EMBEDDING.value),
     "rerank": ("rerank_id", LLMType.RERANK.value),
 }
 
 
-def _stored_name(name: str) -> str:
+def _full_name(name: str) -> str:
     return f"{name}{_NAME_SUFFIX}"
 
 
 def _canonical_reference(name: str) -> str:
     return f"{name}@{_FACTORY}"
+
+
+def _parse_model(value: str) -> tuple[str, str] | None:
+    """Split '<llm_name>@<llm_factory>' into (llm_name, llm_factory). Returns None if invalid."""
+    if "@" not in value:
+        return None
+    name, _, factory = value.rpartition("@")
+    if not name or not factory:
+        return None
+    return name, factory
 
 
 def _serialize_row(row: TenantLLM) -> dict:
@@ -80,17 +90,17 @@ def _read_tenant_defaults(tenant_id: str) -> dict | None:
     }
 
 
-async def _verify_model(internal_type: str, name: str, base_url: str, api_key: str | None) -> str | None:
+async def _verify_model(model_type: str, name: str, base_url: str, api_key: str | None) -> str | None:
     """Probe the configured model. Returns None on success, an error string on failure."""
     timeout = int(os.environ.get("LLM_TIMEOUT_SECONDS", 10))
     key = api_key or "x"
     try:
-        if internal_type == LLMType.EMBEDDING:
+        if model_type == LLMType.EMBEDDING:
             mdl = EmbeddingModel[_FACTORY](key=key, model_name=name, base_url=base_url)
             arr, _tc = await asyncio.wait_for(asyncio.to_thread(mdl.encode, ["ping"]), timeout=timeout)
             if arr is None or len(arr) == 0 or len(arr[0]) == 0:
                 return "Embedding model returned an empty vector."
-        elif internal_type == LLMType.CHAT:
+        elif model_type == LLMType.CHAT:
             mdl = ChatModel[_FACTORY](key=key, model_name=name, base_url=base_url, provider=_FACTORY)
             answer, tc = await asyncio.wait_for(
                 mdl.async_chat(None, [{"role": "user", "content": "ping"}], {"temperature": 0}),
@@ -98,7 +108,7 @@ async def _verify_model(internal_type: str, name: str, base_url: str, api_key: s
             )
             if not tc and "**ERROR**:" in answer:
                 return answer
-        elif internal_type == LLMType.RERANK:
+        elif model_type == LLMType.RERANK:
             mdl = RerankModel[_FACTORY](key=key, model_name=name, base_url=base_url)
             arr, _tc = await asyncio.wait_for(
                 asyncio.to_thread(mdl.similarity, "q", ["a", "b"]),
@@ -121,12 +131,11 @@ async def add_model(tenant_id):
     if err is not None or req is None:
         return get_error_argument_result(err)
 
-    name = req["model_name"]
-    stored = _stored_name(name)
+    name = req["model_name"] + _NAME_SUFFIX
 
-    existing = TenantLLMService.get_or_none(tenant_id=tenant_id, llm_factory=_FACTORY, llm_name=stored)
+    existing = TenantLLMService.get_or_none(tenant_id=tenant_id, llm_factory=_FACTORY, llm_name=name)
     if existing is not None:
-        return get_error_data_result(message=f"Model '{name}' already exists. Use PUT to update it.")
+        return get_error_data_result(message=f"Model '{req["model_name"]}' already exists. Use PUT to update it.")
 
     verify_err = await _verify_model(req["model_type"], name, req["base_url"], req.get("api_key"))
     if verify_err is not None:
@@ -136,7 +145,7 @@ async def add_model(tenant_id):
         "tenant_id": tenant_id,
         "llm_factory": _FACTORY,
         "model_type": req["model_type"],
-        "llm_name": stored,
+        "llm_name": name,
         "api_base": req["base_url"],
         "api_key": req.get("api_key") or "",
     }
@@ -149,7 +158,7 @@ async def add_model(tenant_id):
         logging.exception(e)
         return get_error_data_result(message="Database operation failed.")
 
-    saved = TenantLLMService.get_or_none(tenant_id=tenant_id, llm_factory=_FACTORY, llm_name=stored)
+    saved = TenantLLMService.get_or_none(tenant_id=tenant_id, llm_factory=_FACTORY, llm_name=name)
     return get_result(data=_serialize_row(saved))
 
 
@@ -161,7 +170,11 @@ async def update_model(tenant_id):
     if err is not None:
         return get_error_argument_result(err)
 
-    model_name = req.pop("model_name")
+    parsed = _parse_model(req.pop("model"))
+    if parsed is None:
+        return get_error_argument_result(message="model must be in '<model_name>@<model_factory>' format.")
+    name, factory = parsed
+
     if not req:
         return get_error_argument_result(message="No fields provided to update.")
 
@@ -170,16 +183,15 @@ async def update_model(tenant_id):
     if "max_tokens" in req and req["max_tokens"] is None:
         return get_error_argument_result(message="max_tokens cannot be cleared.")
 
-    stored = _stored_name(model_name)
-    row = TenantLLMService.get_or_none(tenant_id=tenant_id, llm_factory=_FACTORY, llm_name=stored)
+    row = TenantLLMService.get_or_none(tenant_id=tenant_id, llm_factory=factory, llm_name=name)
     if row is None:
-        return get_error_data_result(message=f"Model '{model_name}' not found.")
+        return get_error_data_result(message=f"Model '{name}@{factory}' not found.")
 
     merged_base_url = req["base_url"] if "base_url" in req else row.api_base
     merged_max_tokens = req["max_tokens"] if "max_tokens" in req else row.max_tokens
     merged_api_key = (req["api_key"] or "") if "api_key" in req else (row.api_key or "")
 
-    verify_err = await _verify_model(row.model_type, model_name, merged_base_url, merged_api_key or None)
+    verify_err = await _verify_model(row.model_type, name, merged_base_url, merged_api_key or None)
     if verify_err is not None:
         return get_error_data_result(message=verify_err)
 
@@ -190,14 +202,14 @@ async def update_model(tenant_id):
     }
     try:
         TenantLLMService.filter_update(
-            [TenantLLM.tenant_id == tenant_id, TenantLLM.llm_factory == _FACTORY, TenantLLM.llm_name == stored],
+            [TenantLLM.tenant_id == tenant_id, TenantLLM.llm_factory == factory, TenantLLM.llm_name == name],
             update,
         )
     except OperationalError as e:
         logging.exception(e)
         return get_error_data_result(message="Database operation failed.")
 
-    updated = TenantLLMService.get_or_none(tenant_id=tenant_id, llm_factory=_FACTORY, llm_name=stored)
+    updated = TenantLLMService.get_or_none(tenant_id=tenant_id, llm_factory=factory, llm_name=name)
     return get_result(data=_serialize_row(updated))
 
 
@@ -208,34 +220,38 @@ async def delete_model(tenant_id):
     req, err = await validate_and_parse_json_request(request, DeleteModelReq)
     if err is not None or req is None:
         return get_error_argument_result(err)
-    model_name = req["model_name"]
-    stored = _stored_name(model_name)
-    row = TenantLLMService.get_or_none(tenant_id=tenant_id, llm_factory=_FACTORY, llm_name=stored)
-    if row is None:
-        return get_error_data_result(message=f"Model '{model_name}' not found.")
 
+    parsed = _parse_model(req["model"])
+    if parsed is None:
+        return get_error_argument_result(message="model must be in '<model_name>@<model_factory>' format.")
+    name, factory = parsed
+
+    row = TenantLLMService.get_or_none(tenant_id=tenant_id, llm_factory=factory, llm_name=name)
+    if row is None:
+        return get_error_data_result(message=f"Model '{name}@{factory}' not found.")
+
+    display_name = name[:name.find("___")] if "___" in name else name
     refs = [
-        model_name,
-        _canonical_reference(model_name),
-        stored,
-        _canonical_reference(stored),
+        display_name,
+        name,
+        _canonical_reference(name),
     ]
     try:
         if row.model_type == LLMType.CHAT:
             users = list(Dialog.select(Dialog.id).where(Dialog.tenant_id == tenant_id, Dialog.status == StatusEnum.VALID.value, Dialog.llm_id.in_(refs)).limit(5))
             if users:
                 ids = ", ".join(d.id for d in users)
-                return get_error_data_result(message=f"Model '{model_name}' is used as the LLM by chat assistant(s): {ids}.")
+                return get_error_data_result(message=f"Model '{name}@{factory}' is used as the LLM by chat assistant(s): {ids}.")
         elif row.model_type == LLMType.EMBEDDING:
             users = list(Knowledgebase.select(Knowledgebase.id).where(Knowledgebase.tenant_id == tenant_id, Knowledgebase.status == StatusEnum.VALID.value, Knowledgebase.embd_id.in_(refs)).limit(5))
             if users:
                 ids = ", ".join(k.id for k in users)
-                return get_error_data_result(message=f"Model '{model_name}' is used as the embedding model by dataset(s): {ids}.")
+                return get_error_data_result(message=f"Model '{name}@{factory}' is used as the embedding model by dataset(s): {ids}.")
         elif row.model_type == LLMType.RERANK:
             users = list(Dialog.select(Dialog.id).where(Dialog.tenant_id == tenant_id, Dialog.status == StatusEnum.VALID.value, Dialog.rerank_id.in_(refs)).limit(5))
             if users:
                 ids = ", ".join(d.id for d in users)
-                return get_error_data_result(message=f"Model '{model_name}' is used as the rerank model by chat assistant(s): {ids}.")
+                return get_error_data_result(message=f"Model '{name}@{factory}' is used as the rerank model by chat assistant(s): {ids}.")
 
         tenant = TenantService.get_or_none(id=tenant_id)
         if tenant is not None:
@@ -250,7 +266,7 @@ async def delete_model(tenant_id):
                 TenantService.update_by_id(tenant_id, clear)
 
         TenantLLMService.filter_delete(
-            [TenantLLM.tenant_id == tenant_id, TenantLLM.llm_factory == _FACTORY, TenantLLM.llm_name == stored],
+            [TenantLLM.tenant_id == tenant_id, TenantLLM.llm_factory == factory, TenantLLM.llm_name == name],
         )
     except OperationalError as e:
         logging.exception(e)
@@ -297,11 +313,19 @@ async def set_default_models(tenant_id):
         if not value:
             update[column] = ""
             continue
-        target = TenantLLMService.get_or_none(tenant_id=tenant_id, llm_factory=_FACTORY, llm_name=_stored_name(value))
+
+        parsed = _parse_model(req["model"])
+        if parsed is None:
+            return get_error_argument_result(message="model must be in '<model_name>@<model_factory>' format.")
+        name, factory = parsed
+
+        target = TenantLLMService.get_or_none(tenant_id=tenant_id, llm_factory=factory, llm_name=name)
         if target is None:
             return get_error_data_result(message=f"Model '{value}' not found for default '{api_field}'.")
+
         if target.model_type != internal_type:
             return get_error_data_result(message=f"Model '{value}' is not a {api_field} model.")
+
         update[column] = _canonical_reference(value)
 
     try:

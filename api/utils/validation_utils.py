@@ -748,17 +748,17 @@ class AddModelReq(_ModelReqBase):
 
 
 class UpdateModelReq(_ModelReqBase):
-    model_name: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=128), Field(...)]
+    model: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=255), Field(...)]
     base_url: Annotated[str | None, StringConstraints(strip_whitespace=True, min_length=1, max_length=255), Field(default=None)]
     api_key: Annotated[str | None, Field(default=None, max_length=8192)]
     max_tokens: Annotated[int | None, Field(default=None, ge=1)]
 
 
 class DeleteModelReq(_ModelReqBase):
-    model_name: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=128), Field(...)]
+    model: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=255), Field(...)]
 
 
 class SetDefaultModelsReq(_ModelReqBase):
-    llm: Annotated[str | None, Field(default=None, max_length=128)]
+    chat: Annotated[str | None, Field(default=None, max_length=128)]
     embedding: Annotated[str | None, Field(default=None, max_length=128)]
     rerank: Annotated[str | None, Field(default=None, max_length=128)]
