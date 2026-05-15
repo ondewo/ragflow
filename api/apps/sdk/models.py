@@ -59,22 +59,11 @@ def _canonical_reference(name: str) -> str:
     return f"{name}@{_FACTORY}"
 
 
-def _public_default(value: str | None) -> str | None:
-    if not value:
-        return None
-    suffix = f"@{_FACTORY}"
-    if value.endswith(suffix):
-        return value[: -len(suffix)]
-    return value
-
-
 def _serialize_row(row: TenantLLM) -> dict:
-    name = row.llm_name
-    if name and name.endswith(_NAME_SUFFIX):
-        name = name[: -len(_NAME_SUFFIX)]
     return {
         "model_type": row.model_type,
-        "model_name": name,
+        "model_name": row.llm_name,
+        "model_factory": row.llm_factory,
         "base_url": row.api_base or "",
         "max_tokens": row.max_tokens,
     }
@@ -85,9 +74,9 @@ def _read_tenant_defaults(tenant_id: str) -> dict | None:
     if not ok:
         return None
     return {
-        "llm": _public_default(tenant.llm_id),
-        "embedding": _public_default(tenant.embd_id),
-        "rerank": _public_default(tenant.rerank_id),
+        "llm": tenant.llm_id,
+        "embedding": tenant.embd_id,
+        "rerank": tenant.rerank_id,
     }
 
 
