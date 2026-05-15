@@ -64,6 +64,10 @@ if __name__ == "__main__":
 
     urls = get_urls(args.china_mirrors)
 
+    opener = urllib.request.build_opener()
+    opener.addheaders = [("User-Agent", "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")]
+    urllib.request.install_opener(opener)
+
     for url in urls:
         download_url = url[0] if isinstance(url, list) else url
         filename = url[1] if isinstance(url, list) else url.split("/")[-1]
