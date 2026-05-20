@@ -120,7 +120,7 @@ class TenantLLMService(CommonService):
             model_config = model_config.to_dict()
         elif llm_type == LLMType.EMBEDDING and fid == "Builtin" and "tei-" in os.getenv("COMPOSE_PROFILES", "") and mdlnm == os.getenv("TEI_MODEL", ""):
             embedding_cfg = settings.EMBEDDING_CFG
-            model_config = {"llm_factory": "Builtin", "api_key": embedding_cfg["api_key"], "llm_name": mdlnm, "api_base": embedding_cfg["base_url"]}
+            model_config = {"llm_factory": "Builtin", "api_key": embedding_cfg["api_key"], "llm_name": mdlnm, "api_base": embedding_cfg["base_url"], "default_headers": {}}
         else:
             raise LookupError(f"Model({mdlnm}@{fid}) not authorized")
 
@@ -136,15 +136,18 @@ class TenantLLMService(CommonService):
     def model_instance(cls, tenant_id, llm_type, llm_name=None, lang="Chinese", **kwargs):
         model_config = TenantLLMService.get_model_config(tenant_id, llm_type, llm_name)
         kwargs.update({"provider": model_config["llm_factory"]})
+        headers_kwarg: dict = {}
+        if model_config.get("default_headers"):
+            headers_kwarg["default_headers"] = model_config["default_headers"]
         if llm_type == LLMType.EMBEDDING.value:
             if model_config["llm_factory"] not in EmbeddingModel:
                 return None
-            return EmbeddingModel[model_config["llm_factory"]](model_config["api_key"], model_config["llm_name"], base_url=model_config["api_base"])
+            return EmbeddingModel[model_config["llm_factory"]](model_config["api_key"], model_config["llm_name"], base_url=model_config["api_base"], **headers_kwarg)
 
         elif llm_type == LLMType.RERANK:
             if model_config["llm_factory"] not in RerankModel:
                 return None
-            return RerankModel[model_config["llm_factory"]](model_config["api_key"], model_config["llm_name"], base_url=model_config["api_base"])
+            return RerankModel[model_config["llm_factory"]](model_config["api_key"], model_config["llm_name"], base_url=model_config["api_base"], **headers_kwarg)
 
         elif llm_type == LLMType.IMAGE2TEXT.value:
             if model_config["llm_factory"] not in CvModel:

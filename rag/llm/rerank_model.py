@@ -193,13 +193,16 @@ class LmStudioRerank(Base):
 class OpenAI_APIRerank(Base):
     _FACTORY_NAME = "OpenAI-API-Compatible"
 
-    def __init__(self, key, model_name, base_url):
+    def __init__(self, key, model_name, base_url, **kwargs):
         normalized_base_url = (base_url or "").strip()
         if "/rerank" in normalized_base_url:
             self.base_url = normalized_base_url.rstrip("/")
         else:
             self.base_url = urljoin(f"{normalized_base_url.rstrip('/')}/", "rerank").rstrip("/")
         self.headers = {"Content-Type": "application/json", "Authorization": f"Bearer {key}"}
+        extra = kwargs.get("default_headers") or {}
+        if extra:
+            self.headers.update(extra)
         self.model_name = model_name.split("___")[0]
 
     def similarity(self, query: str, texts: list):

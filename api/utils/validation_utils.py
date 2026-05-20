@@ -728,6 +728,44 @@ class BaseListReq(BaseModel):
 class ListDatasetReq(BaseListReq): ...
 
 
+_HEADER_NAME_TCHAR = set(string.ascii_letters + string.digits + "!#$%&'*+-.^_`|~")
+_HEADER_VALUE_ALLOWED = set(chr(c) for c in range(0x20, 0x7F)) | {"\t"}
+_HEADER_FORBIDDEN = {"host", "content-length"}
+_HEADER_MAX_COUNT = 32
+_HEADER_NAME_MAX_LEN = 128
+_HEADER_VALUE_MAX_LEN = 4096
+
+
+def _validate_default_headers(v: dict[str, str] | None) -> dict[str, str] | None:
+    """Validate the default_headers dict against RFC 7230 rules and our blacklist."""
+    if v is None:
+        return v
+    if not isinstance(v, dict):
+        raise PydanticCustomError("default_headers_invalid", "default_headers must be an object")
+    if len(v) > _HEADER_MAX_COUNT:
+        raise PydanticCustomError("default_headers_too_many", "default_headers must contain at most {max} entries", {"max": _HEADER_MAX_COUNT})
+
+    seen_lower: dict[str, str] = {}
+    for name, value in v.items():
+        if not isinstance(name, str) or not isinstance(value, str):
+            raise PydanticCustomError("default_headers_invalid", "header names and values must be strings")
+        if not (1 <= len(name) <= _HEADER_NAME_MAX_LEN):
+            raise PydanticCustomError("default_headers_invalid", "header name length must be 1-{max} characters", {"max": _HEADER_NAME_MAX_LEN})
+        if not (1 <= len(value) <= _HEADER_VALUE_MAX_LEN):
+            raise PydanticCustomError("default_headers_invalid", "header value length must be 1-{max} characters", {"max": _HEADER_VALUE_MAX_LEN})
+        if any(ch not in _HEADER_NAME_TCHAR for ch in name):
+            raise PydanticCustomError("default_headers_invalid", "header name '{name}' contains illegal characters (RFC 7230 token)", {"name": name})
+        if any(ch not in _HEADER_VALUE_ALLOWED for ch in value):
+            raise PydanticCustomError("default_headers_invalid", "header '{name}' value contains illegal characters (printable ASCII or tab only)", {"name": name})
+        lower = name.lower()
+        if lower in _HEADER_FORBIDDEN:
+            raise PydanticCustomError("default_headers_forbidden", "header '{name}' is managed by the HTTP transport and cannot be overridden (forbidden: Host, Content-Length)", {"name": name})
+        if lower in seen_lower:
+            raise PydanticCustomError("default_headers_invalid", "duplicate header name '{name}' (case-insensitive)", {"name": name})
+        seen_lower[lower] = name
+    return v
+
+
 class _ModelReqBase(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True, protected_namespaces=())
 
@@ -738,6 +776,7 @@ class AddModelReq(_ModelReqBase):
     base_url: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=255), Field(...)]
     api_key: Annotated[str | None, Field(default=None, max_length=8192)]
     max_tokens: Annotated[int | None, Field(default=None, ge=1)]
+    default_headers: Annotated[dict[str, str] | None, Field(default=None)]
 
     @field_validator("model_name", mode="after")
     @classmethod
@@ -746,12 +785,23 @@ class AddModelReq(_ModelReqBase):
             raise PydanticCustomError("invalid_model_name", "model_name cannot contain '___' or '@'")
         return v
 
+    @field_validator("default_headers", mode="after")
+    @classmethod
+    def _check_default_headers(cls, v: dict[str, str] | None) -> dict[str, str] | None:
+        return _validate_default_headers(v)
+
 
 class UpdateModelReq(_ModelReqBase):
     model: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=255), Field(...)]
     base_url: Annotated[str | None, StringConstraints(strip_whitespace=True, min_length=1, max_length=255), Field(default=None)]
     api_key: Annotated[str | None, Field(default=None, max_length=8192)]
     max_tokens: Annotated[int | None, Field(default=None, ge=1)]
+    default_headers: Annotated[dict[str, str] | None, Field(default=None)]
+
+    @field_validator("default_headers", mode="after")
+    @classmethod
+    def _check_default_headers(cls, v: dict[str, str] | None) -> dict[str, str] | None:
+        return _validate_default_headers(v)
 
 
 class DeleteModelReq(_ModelReqBase):

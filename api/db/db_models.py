@@ -817,6 +817,7 @@ class TenantLLM(DataBaseModel):
     max_tokens = IntegerField(default=8192, index=True)
     used_tokens = IntegerField(default=0, index=True)
     status = CharField(max_length=1, null=False, help_text="is it validate(0: wasted, 1: validate)", default="1", index=True)
+    default_headers = JSONField(null=True, default=dict, help_text="Custom HTTP headers added to every model request")
 
     def __str__(self):
         return self.llm_name
@@ -1428,6 +1429,7 @@ def migrate_db():
     alter_db_add_column(migrator, "knowledgebase", "mindmap_task_finish_at", CharField(null=True))
     alter_db_column_type(migrator, "tenant_llm", "api_key", TextField(null=True, help_text="API KEY"))
     alter_db_add_column(migrator, "tenant_llm", "status", CharField(max_length=1, null=False, help_text="is it validate(0: wasted, 1: validate)", default="1", index=True))
+    alter_db_add_column(migrator, "tenant_llm", "default_headers", JSONField(null=True, default=dict, help_text="Custom HTTP headers added to every model request"))
     alter_db_add_column(migrator, "connector2kb", "auto_parse", CharField(max_length=1, null=False, default="1", index=False))
     alter_db_add_column(migrator, "llm_factories", "rank", IntegerField(default=0, index=False))
     alter_db_add_column(migrator, "api_4_conversation", "name", CharField(max_length=255, null=True, help_text="conversation name", index=False))

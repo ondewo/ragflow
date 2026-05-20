@@ -76,6 +76,7 @@ def _serialize_row(row: TenantLLM) -> dict:
         "model_factory": row.llm_factory,
         "base_url": row.api_base or "",
         "max_tokens": row.max_tokens,
+        "default_headers": row.default_headers or {},
     }
 
 
@@ -90,18 +91,19 @@ def _read_tenant_defaults(tenant_id: str) -> dict | None:
     }
 
 
-async def _verify_model(model_type: str, name: str, base_url: str, api_key: str | None) -> str | None:
+async def _verify_model(model_type: str, name: str, base_url: str, api_key: str | None, default_headers: dict | None = None) -> str | None:
     """Probe the configured model. Returns None on success, an error string on failure."""
     timeout = int(os.environ.get("LLM_TIMEOUT_SECONDS", 10))
     key = api_key or "x"
+    headers_kwarg = {"default_headers": default_headers} if default_headers else {}
     try:
         if model_type == LLMType.EMBEDDING:
-            mdl = EmbeddingModel[_FACTORY](key=key, model_name=name, base_url=base_url)
+            mdl = EmbeddingModel[_FACTORY](key=key, model_name=name, base_url=base_url, **headers_kwarg)
             arr, _tc = await asyncio.wait_for(asyncio.to_thread(mdl.encode, ["ping"]), timeout=timeout)
             if arr is None or len(arr) == 0 or len(arr[0]) == 0:
                 return "Embedding model returned an empty vector."
         elif model_type == LLMType.CHAT:
-            mdl = ChatModel[_FACTORY](key=key, model_name=name, base_url=base_url, provider=_FACTORY)
+            mdl = ChatModel[_FACTORY](key=key, model_name=name, base_url=base_url, provider=_FACTORY, **headers_kwarg)
             answer, tc = await asyncio.wait_for(
                 mdl.async_chat(None, [{"role": "user", "content": "ping"}], {"temperature": 0}),
                 timeout=timeout,
@@ -109,7 +111,7 @@ async def _verify_model(model_type: str, name: str, base_url: str, api_key: str 
             if not tc and "**ERROR**:" in answer:
                 return answer
         elif model_type == LLMType.RERANK:
-            mdl = RerankModel[_FACTORY](key=key, model_name=name, base_url=base_url)
+            mdl = RerankModel[_FACTORY](key=key, model_name=name, base_url=base_url, **headers_kwarg)
             arr, _tc = await asyncio.wait_for(
                 asyncio.to_thread(mdl.similarity, "q", ["a", "b"]),
                 timeout=timeout,
@@ -137,7 +139,8 @@ async def add_model(tenant_id):
     if existing is not None:
         return get_error_data_result(message=f"Model '{req["model_name"]}' already exists. Use PUT to update it.")
 
-    verify_err = await _verify_model(req["model_type"], name, req["base_url"], req.get("api_key"))
+    headers = req.get("default_headers") or {}
+    verify_err = await _verify_model(req["model_type"], name, req["base_url"], req.get("api_key"), headers)
     if verify_err is not None:
         return get_error_data_result(message=verify_err)
 
@@ -148,6 +151,7 @@ async def add_model(tenant_id):
         "llm_name": name,
         "api_base": req["base_url"],
         "api_key": req.get("api_key") or "",
+        "default_headers": headers,
     }
     if req.get("max_tokens") is not None:
         fields["max_tokens"] = req["max_tokens"]
@@ -190,8 +194,13 @@ async def update_model(tenant_id):
     merged_base_url = req["base_url"] if "base_url" in req else row.api_base
     merged_max_tokens = req["max_tokens"] if "max_tokens" in req else row.max_tokens
     merged_api_key = (req["api_key"] or "") if "api_key" in req else (row.api_key or "")
+    # default_headers: present + null clears (to {}); present + dict replaces; absent keeps existing.
+    if "default_headers" in req:
+        merged_default_headers = req["default_headers"] or {}
+    else:
+        merged_default_headers = row.default_headers or {}
 
-    verify_err = await _verify_model(row.model_type, name, merged_base_url, merged_api_key or None)
+    verify_err = await _verify_model(row.model_type, name, merged_base_url, merged_api_key or None, merged_default_headers)
     if verify_err is not None:
         return get_error_data_result(message=verify_err)
 
@@ -199,6 +208,7 @@ async def update_model(tenant_id):
         "api_base": merged_base_url,
         "api_key": merged_api_key,
         "max_tokens": merged_max_tokens,
+        "default_headers": merged_default_headers,
     }
     try:
         TenantLLMService.filter_update(
