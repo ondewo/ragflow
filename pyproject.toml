@@ -176,9 +176,6 @@ test = [
     "codecov>=2.1.13",
 ]
 
-[[tool.uv.index]]
-url = "https://pypi.tuna.tsinghua.edu.cn/simple"
-
 [tool.setuptools]
 packages = [
     'agent',
