@@ -215,6 +215,13 @@ def delete_user_data(user_id: str) -> dict:
             langfuse_delete_res = TenantLangfuseService.delete_ty_tenant_id(tenant_id)
             done_msg += f"- Deleted {langfuse_delete_res} langfuse records.\n"
             try:
+                content_index_name = search.index_name(tenant_id)
+                settings.docStoreConn.delete_idx(content_index_name, "")
+                done_msg += f"- Deleted content index {content_index_name}.\n"
+            except Exception as e:
+                logging.warning(f"Failed to delete content index for tenant {tenant_id}: {e}")
+                done_msg += "- Warning: Failed to delete content index (continuing).\n"
+            try:
                 metadata_index_name = DocMetadataService._get_doc_meta_index_name(tenant_id)
                 settings.docStoreConn.delete_idx(metadata_index_name, "")
                 done_msg += f"- Deleted metadata table {metadata_index_name}.\n"
