@@ -34,6 +34,7 @@ from common.constants import PAGERANK_FLD, TAG_FLD
 from common import settings
 
 ATTEMPT_TIME = 2
+DEFAULT_POOL_SIZE = 32
 
 logger = logging.getLogger('ragflow.opensearch_conn')
 
@@ -50,7 +51,8 @@ class OSConnection(DocStoreConnection):
                     http_auth=(settings.OS["username"], settings.OS[
                         "password"]) if "username" in settings.OS and "password" in settings.OS else None,
                     verify_certs=False,
-                    timeout=600
+                    timeout=600,
+                    pool_maxsize=int(settings.OS.get("pool_size", DEFAULT_POOL_SIZE)),
                 )
                 if self.os:
                     self.info = self.os.info()

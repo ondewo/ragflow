@@ -27,6 +27,7 @@ os:
   hosts: 'http://localhost:1201'
   username: 'admin'
   password: 'infini_rag_flow_OS_01'
+  pool_size: 32
 infinity:
   uri: 'localhost:23817'
   postgres_port: 5432
