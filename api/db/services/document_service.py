@@ -111,7 +111,8 @@ class DocumentService(CommonService):
         docs = docs.paginate(page_number, items_per_page)
 
         docs_list = list(docs.dicts())
-        metadata_map = DocMetadataService.get_metadata_for_documents(None, kb_id)
+        page_doc_ids = [doc["id"] for doc in docs_list]
+        metadata_map = DocMetadataService.get_metadata_for_documents(page_doc_ids, kb_id)
         for doc in docs_list:
             doc["meta_fields"] = metadata_map.get(doc["id"], {})
         return docs_list, count

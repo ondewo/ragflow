@@ -326,6 +326,7 @@ class OSConnection(DocStoreConnection):
             operations.append(d_copy)
 
         res = []
+        last_error: str = ""
         for _ in range(ATTEMPT_TIME):
             try:
                 res = []
@@ -340,14 +341,16 @@ class OSConnection(DocStoreConnection):
                             res.append(str(item[action]["_id"]) + ":" + str(item[action]["error"]))
                 return res
             except Exception as e:
-                res.append(str(e))
+                last_error = str(e)
                 logger.warning("OSConnection.insert got exception: " + str(e))
-                res = []
                 if re.search(r"(Timeout|time out)", str(e), re.IGNORECASE):
-                    res.append(str(e))
                     time.sleep(3)
                     continue
-        return res
+                # Non-timeout errors are not retryable and must be surfaced
+                return [last_error]
+
+        # All attempts exhausted -> report failure
+        return [last_error or "OSConnection.insert failed after retries"]
 
     def update(self, condition: dict, newValue: dict, indexName: str, knowledgebaseId: str) -> bool:
         doc = copy.deepcopy(newValue)

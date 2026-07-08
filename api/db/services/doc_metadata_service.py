@@ -194,6 +194,97 @@ class DocMetadataService:
             knowledgebase_ids=[kb_id]
         )
 
+    @staticmethod
+    def _raw_doc_store_client():
+        """
+        Return the underlying ES/OpenSearch client, or None for backends without one (e.g. Infinity).
+        """
+        return getattr(settings.docStoreConn, "es", None) or getattr(settings.docStoreConn, "os", None)
+
+    @classmethod
+    def _iter_all_metadata(cls, kb_ids: list[str]):
+        """
+        Yield (doc_id, source_dict) for EVERY metadata row of the given dataset(s).
+
+        Args:
+            kb_ids: Dataset IDs (must share a tenant).
+
+        Yields:
+            Tuple of (doc_id, source_dict) for each metadata row.
+        """
+        kb = Knowledgebase.get_by_id(kb_ids[0])
+        if not kb:
+            return
+
+        index_name = cls._get_doc_meta_index_name(kb.tenant_id)
+        if not settings.docStoreConn.index_exist(index_name, ""):
+            return
+
+        client = cls._raw_doc_store_client()
+        if client is None:
+            # Infinity / OceanBase: no raw scroll client -> best-effort single large search.
+            results = settings.docStoreConn.search(
+                select_fields=["*"],
+                highlight_fields=[],
+                condition={"kb_id": kb_ids},
+                match_expressions=[],
+                order_by=OrderByExpr(),
+                offset=0,
+                limit=1_000_000,
+                index_names=index_name,
+                knowledgebase_ids=kb_ids,
+            )
+            yield from cls._iter_search_results(results)
+            return
+
+        # size=10000 keeps every scroll batch within max_result_window
+        scroll_id = None
+        try:
+            res = client.search(
+                index=index_name,
+                body={"query": {"terms": {"kb_id": kb_ids}}, "size": 10000},
+                scroll="2m",
+            )
+            while True:
+                scroll_id = res.get("_scroll_id")
+                hits = res.get("hits", {}).get("hits", [])
+                if not hits:
+                    break
+                for hit in hits:
+                    doc_id = hit.get("_id", "")
+                    if doc_id:
+                        yield doc_id, hit.get("_source", {})
+                res = client.scroll(scroll_id=scroll_id, scroll="2m")
+        finally:
+            if scroll_id:
+                try:
+                    client.clear_scroll(scroll_id=scroll_id)
+                except Exception:
+                    pass
+
+    @classmethod
+    def _mget_metadata(cls, doc_ids: List[str], index_name: str):
+        """
+        Return [(doc_id, source_dict), ...] for the given document IDs via a single by-ID multi-get.
+
+        Args:
+            doc_ids: Document IDs to fetch metadata for.
+            index_name: Per-tenant metadata index name.
+
+        Returns:
+            List of (doc_id, source_dict) tuples for the documents that have a metadata row.
+        """
+        client = cls._raw_doc_store_client()
+        if client is None:
+            pairs = []
+            for did in doc_ids:
+                doc = settings.docStoreConn.get(did, index_name, [""])
+                if doc:
+                    pairs.append((did, doc))
+            return pairs
+        res = client.mget(index=index_name, body={"ids": list(doc_ids)})
+        return [(d["_id"], d.get("_source", {})) for d in res.get("docs", []) if d.get("found")]
+
     @classmethod
     def _split_combined_values(cls, meta_fields: Dict) -> Dict:
         """
@@ -624,37 +715,10 @@ class DocMetadataService:
             Metadata dictionary in format: {field_name: {value: [doc_ids]}}
         """
         try:
-            # Get tenant_id from first KB
-            kb = Knowledgebase.get_by_id(kb_ids[0])
-            if not kb:
-                return {}
-
-            tenant_id = kb.tenant_id
-            index_name = cls._get_doc_meta_index_name(tenant_id)
-
-            condition = {"kb_id": kb_ids}
-            order_by = OrderByExpr()
-
-            # Query with large limit
-            results = settings.docStoreConn.search(
-                select_fields=["*"],
-                highlight_fields=[],
-                condition=condition,
-                match_expressions=[],
-                order_by=order_by,
-                offset=0,
-                limit=10000,
-                index_names=index_name,
-                knowledgebase_ids=kb_ids
-            )
-
-            logging.debug(f"[get_meta_by_kbs] index_name: {index_name}, kb_ids: {kb_ids}")
-
             # Aggregate metadata (legacy: keeps lists as string keys)
             meta = {}
 
-            # Use helper to iterate over results in any format
-            for doc_id, doc in cls._iter_search_results(results):
+            for doc_id, doc in cls._iter_all_metadata(kb_ids):
                 # Extract metadata fields (exclude system fields)
                 doc_meta = cls._extract_metadata(doc)
 
@@ -700,38 +764,10 @@ class DocMetadataService:
             Metadata dictionary in format: {field_name: {value: [doc_ids]}}
         """
         try:
-            # Get tenant_id from first KB
-            kb = Knowledgebase.get_by_id(kb_ids[0])
-            if not kb:
-                return {}
-
-            tenant_id = kb.tenant_id
-            index_name = cls._get_doc_meta_index_name(tenant_id)
-
-            condition = {"kb_id": kb_ids}
-            order_by = OrderByExpr()
-
-            # Query with large limit
-            results = settings.docStoreConn.search(
-                select_fields=["*"],  # Get all fields
-                highlight_fields=[],
-                condition=condition,
-                match_expressions=[],
-                order_by=order_by,
-                offset=0,
-                limit=10000,
-                index_names=index_name,
-                knowledgebase_ids=kb_ids
-            )
-
-            logging.debug(f"[get_flatted_meta_by_kbs] index_name: {index_name}, kb_ids: {kb_ids}")
-            logging.debug(f"[get_flatted_meta_by_kbs] results type: {type(results)}")
-
             # Aggregate metadata
             meta = {}
 
-            # Use helper to iterate over results in any format
-            for doc_id, doc in cls._iter_search_results(results):
+            for doc_id, doc in cls._iter_all_metadata(kb_ids):
                 # Extract metadata fields (exclude system fields)
                 doc_meta = cls._extract_metadata(doc)
 
@@ -769,22 +805,22 @@ class DocMetadataService:
             Dictionary mapping doc_id to meta_fields dict
         """
         try:
-            results = cls._search_metadata(kb_id, condition={"kb_id": kb_id})
-            if not results:
-                return {}
-
             # Build mapping: doc_id -> meta_fields
             meta_mapping = {}
 
-            # If doc_ids is provided, create a set for efficient lookup
-            doc_ids_set = set(doc_ids) if doc_ids else None
+            if doc_ids is not None:
+                kb = Knowledgebase.get_by_id(kb_id)
+                if not kb:
+                    return {}
+                index_name = cls._get_doc_meta_index_name(kb.tenant_id)
+                if not settings.docStoreConn.index_exist(index_name, ""):
+                    return {}
+                pairs = cls._mget_metadata(list(doc_ids), index_name)
+            else:
+                # Whole-KB request: page through all rows.
+                pairs = cls._iter_all_metadata([kb_id])
 
-            # Use helper to iterate over results in any format
-            for doc_id, doc in cls._iter_search_results(results):
-                # Filter by doc_ids if provided
-                if doc_ids_set is not None and doc_id not in doc_ids_set:
-                    continue
-
+            for doc_id, doc in pairs:
                 # Extract metadata (handles both JSON strings and dicts)
                 doc_meta = cls._extract_metadata(doc)
                 if doc_meta:
@@ -837,10 +873,6 @@ class DocMetadataService:
             return "string"
 
         try:
-            results = cls._search_metadata(kb_id, condition={"kb_id": kb_id})
-            if not results:
-                return {}
-
             # If doc_ids are provided, we'll filter after the search
             doc_ids_set = set(doc_ids) if doc_ids else None
 
@@ -850,8 +882,7 @@ class DocMetadataService:
 
             logging.debug(f"[METADATA SUMMARY] KB: {kb_id}, doc_ids: {doc_ids}")
 
-            # Use helper to iterate over results in any format
-            for doc_id, doc in cls._iter_search_results(results):
+            for doc_id, doc in cls._iter_all_metadata([kb_id]):
                 # Check doc_ids filter
                 if doc_ids_set and doc_id not in doc_ids_set:
                     continue
