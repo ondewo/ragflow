@@ -76,9 +76,20 @@ if __name__ == "__main__":
             urllib.request.urlretrieve(download_url, filename)
 
     local_dir = os.path.abspath("nltk_data")
-    for data in ["wordnet", "punkt", "punkt_tab"]:
+    nltk_resource_paths = {
+        "wordnet": "corpora/wordnet",
+        "punkt": "tokenizers/punkt",
+        "punkt_tab": "tokenizers/punkt_tab",
+    }
+    for data in nltk_resource_paths:
         print(f"Downloading nltk {data}...")
         nltk.download(data, download_dir=local_dir)
+
+    # fail loudly if NLTK download failed
+    for data, rel_path in nltk_resource_paths.items():
+        base = os.path.join(local_dir, rel_path)
+        if not (os.path.isdir(base) or os.path.isfile(f"{base}.zip")):
+            raise SystemExit(f"FATAL: NLTK resource '{data}' did not download (missing {base}[.zip]). Aborting the build")
 
     for repo_id in repos:
         print(f"Downloading huggingface repo {repo_id}...")

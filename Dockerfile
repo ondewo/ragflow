@@ -19,6 +19,9 @@ RUN --mount=type=bind,from=infiniflow/ragflow_deps:latest,source=/huggingface.co
 # This is the only way to run python-tika without internet access. Without this set, the default is to check the tika version and pull latest every time from Apache.
 RUN --mount=type=bind,from=infiniflow/ragflow_deps:latest,source=/,target=/deps \
     cp -r /deps/nltk_data /root/ && \
+    { test -d /root/nltk_data/tokenizers/punkt_tab || test -f /root/nltk_data/tokenizers/punkt_tab.zip; } && \
+    { test -d /root/nltk_data/tokenizers/punkt || test -f /root/nltk_data/tokenizers/punkt.zip; } || \
+        { echo "FATAL: NLTK punkt/punkt_tab data missing from infiniflow/ragflow_deps:latest; rebuild the deps image (make build_download_deps + Dockerfile.deps)." >&2; exit 1; } && \
     cp /deps/tika-server-standard-3.2.3.jar /deps/tika-server-standard-3.2.3.jar.md5 /ragflow/ && \
     cp /deps/cl100k_base.tiktoken /ragflow/9b5ad71b2ce5302211f9c61530b329a4922fc6a4
 
