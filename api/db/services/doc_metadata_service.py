@@ -562,6 +562,29 @@ class DocMetadataService:
             return False
 
     @classmethod
+    def delete_kb_metadata(cls, kb_id: str, tenant_id: str) -> bool:
+        """
+        Delete the metadata of every document of a knowledge base
+
+
+        Args:
+            kb_id: Knowledge base ID whose metadata should be removed.
+            tenant_id: Tenant ID owning the metadata index.
+
+        Returns:
+            True on success (including when there is no metadata to delete), False otherwise.
+        """
+        try:
+            index_name = cls._get_doc_meta_index_name(tenant_id)
+            if not settings.docStoreConn.index_exist(index_name, ""):
+                return True
+            settings.docStoreConn.delete({"kb_id": kb_id}, index_name, kb_id)
+            return True
+        except Exception as e:
+            logging.warning(f"Failed to delete metadata for knowledge base {kb_id}: {e}")
+            return False
+
+    @classmethod
     def _drop_empty_metadata_table(cls, index_name: str, tenant_id: str) -> None:
         """
         Check if metadata table is empty and drop it if so.

@@ -41,6 +41,8 @@ from rag.nlp import rag_tokenizer, search
 from rag.utils.redis_conn import REDIS_CONN
 from common.doc_store.doc_store_base import OrderByExpr
 from common import settings
+from common.constants import FileSource
+
 
 
 class DocumentService(CommonService):
@@ -421,6 +423,97 @@ class DocumentService(CommonService):
             logging.warning(f"Failed to cleanup knowledge graph for document {doc.id}: {e}")
 
         return cls.delete_by_id(doc.id)
+
+    @classmethod
+    @DB.connection_context()
+    def remove_documents_of_kb(cls, kb, tenant_id):
+        """
+        Remove ALL documents of a knowledge base together with their side data (parsing tasks, chunks, chunk images, thumbnails, metadata, file mappings and the dataset's object-storage bucket).
+
+        Args:
+            kb: Knowledgebase model instance being deleted.
+            tenant_id: Tenant ID owning the dataset.
+
+        Returns:
+            The number of documents that were removed.
+        """
+        # imported locally: file2document/file/task services import DocumentService back, so importing them at module level would be a circular import
+        from api.db.services.task_service import TaskService
+        from api.db.services.file2document_service import File2DocumentService
+        from api.db.services.file_service import FileService
+
+        index_name = search.index_name(tenant_id)
+        kb_id = kb.id
+
+        # subquery of every document ID of the dataset
+        doc_id_subq = cls.model.select(cls.model.id).where(cls.model.kb_id == kb_id)
+
+        # cancel any parsing tasks
+        try:
+            unfinished = TaskService.model.select(TaskService.model.id).where(
+                TaskService.model.doc_id.in_(doc_id_subq), TaskService.model.progress < 1
+            )
+            for t in unfinished:
+                try:
+                    REDIS_CONN.set(f"{t.id}-cancel", "x")
+                except Exception as e:
+                    logging.warning(f"Failed to cancel task {t.id} for kb {kb_id}: {e}")
+        except Exception as e:
+            logging.warning(f"Failed to enumerate tasks for kb {kb_id}: {e}")
+        try:
+            TaskService.filter_delete([Task.doc_id.in_(doc_id_subq)])
+        except Exception as e:
+            logging.warning(f"Failed to delete tasks for kb {kb_id}: {e}")
+
+        # object storage cleanup
+        real_storage = getattr(settings.STORAGE_IMPL, "storage_impl", settings.STORAGE_IMPL)
+        can_drop_bucket = hasattr(real_storage, "remove_bucket")
+        if not can_drop_bucket:
+            for d in cls.model.select(cls.model.id, cls.model.kb_id, cls.model.thumbnail).where(cls.model.kb_id == kb_id):
+                try:
+                    cls.delete_chunk_images(d, tenant_id)
+                except Exception as e:
+                    logging.warning(f"Failed to delete chunk images for document {d.id} in kb {kb_id}: {e}")
+                thumbnail = d.thumbnail
+                if not thumbnail or thumbnail.startswith(IMG_BASE64_PREFIX):
+                    continue
+                try:
+                    if settings.STORAGE_IMPL.obj_exist(kb_id, thumbnail):
+                        settings.STORAGE_IMPL.rm(kb_id, thumbnail)
+                except Exception as e:
+                    logging.warning(f"Failed to delete thumbnail for document {d.id} in kb {kb_id}: {e}")
+        else:
+            try:
+                settings.STORAGE_IMPL.remove_bucket(kb_id)
+            except Exception as e:
+                logging.warning(f"Failed to remove storage bucket for kb {kb_id}: {e}")
+
+        # drop all chunks of the dataset from the doc store
+        settings.docStoreConn.delete({"kb_id": kb_id}, index_name, kb_id)
+        settings.docStoreConn.delete_idx(index_name, kb_id)
+
+        # remove all document metadata of the dataset
+        try:
+            DocMetadataService.delete_kb_metadata(kb_id, tenant_id)
+        except Exception as e:
+            logging.warning(f"Failed to delete metadata for kb {kb_id}: {e}")
+
+        # Remove the knowledge-base source files and their file<->document mappings
+        try:
+            file_id_subq = File2Document.select(File2Document.file_id).where(
+                File2Document.document_id.in_(doc_id_subq)
+            )
+            FileService.filter_delete(
+                [File.source_type == FileSource.KNOWLEDGEBASE, File.id.in_(file_id_subq)]
+            )
+            File2DocumentService.filter_delete([File2Document.document_id.in_(doc_id_subq)])
+        except Exception as e:
+            logging.warning(f"Failed to delete file mappings for kb {kb_id}: {e}")
+
+        # delete the document rows last (subqueries above still need them)
+        deleted = cls.filter_delete([Document.kb_id == kb_id])
+
+        return deleted
 
     @classmethod
     @DB.connection_context()

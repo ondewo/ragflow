@@ -26,7 +26,6 @@ from api.db.services.connector_service import Connector2KbService
 from api.db.services.llm_service import LLMBundle
 from api.db.services.document_service import DocumentService, queue_raptor_o_graphrag_tasks
 from api.db.services.doc_metadata_service import DocMetadataService
-from api.db.services.file2document_service import File2DocumentService
 from api.db.services.file_service import FileService
 from api.db.services.pipeline_operation_log_service import PipelineOperationLogService
 from api.db.services.task_service import TaskService, GRAPH_RAPTOR_FAKE_DOC_ID
@@ -289,37 +288,22 @@ async def rm():
                 code=RetCode.OPERATING_ERROR)
 
         def _rm_sync():
-            for doc in DocumentService.query(kb_id=req["kb_id"]):
-                if not DocumentService.remove_document(doc, kbs[0].tenant_id):
-                    return get_data_error_result(
-                        message="Database error (Document removal)!")
-                f2d = File2DocumentService.get_by_document_id(doc.id)
-                if f2d:
-                    FileService.filter_delete([File.source_type == FileSource.KNOWLEDGEBASE, File.id == f2d[0].file_id])
-                File2DocumentService.delete_by_document_id(doc.id)
+            kb = kbs[0]
+            DocumentService.remove_documents_of_kb(kb, kb.tenant_id)
+
             FileService.filter_delete(
                 [
-                    File.tenant_id == kbs[0].tenant_id,
+                    File.tenant_id == kb.tenant_id,
                     File.source_type == FileSource.KNOWLEDGEBASE,
                     File.type == "folder",
-                    File.name == kbs[0].name,
+                    File.name == kb.name,
                 ]
             )
-            # Delete the table BEFORE deleting the database record
-            for kb in kbs:
-                try:
-                    settings.docStoreConn.delete({"kb_id": kb.id}, search.index_name(kb.tenant_id), kb.id)
-                    settings.docStoreConn.delete_idx(search.index_name(kb.tenant_id), kb.id)
-                    logging.info(f"Dropped index for dataset {kb.id}")
-                except Exception as e:
-                    logging.error(f"Failed to drop index for dataset {kb.id}: {e}")
 
             if not KnowledgebaseService.delete_by_id(req["kb_id"]):
                 return get_data_error_result(
                     message="Database error (Knowledgebase removal)!")
-            for kb in kbs:
-                if hasattr(settings.STORAGE_IMPL, 'remove_bucket'):
-                    settings.STORAGE_IMPL.remove_bucket(kb.id)
+
             return get_json_result(data=True)
 
         return await thread_pool_exec(_rm_sync)

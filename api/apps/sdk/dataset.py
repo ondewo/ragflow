@@ -22,7 +22,6 @@ from quart import request
 from peewee import OperationalError
 from api.db.db_models import File
 from api.db.services.document_service import DocumentService, queue_raptor_o_graphrag_tasks
-from api.db.services.file2document_service import File2DocumentService
 from api.db.services.file_service import FileService
 from api.db.services.knowledgebase_service import KnowledgebaseService
 from api.db.services.task_service import GRAPH_RAPTOR_FAKE_DOC_ID, TaskService
@@ -49,6 +48,7 @@ from api.utils.validation_utils import (
 )
 from rag.nlp import search
 from common.constants import PAGERANK_FLD
+from common.misc_utils import thread_pool_exec
 from common import settings
 
 
@@ -210,37 +210,21 @@ async def delete(tenant_id):
             if len(error_kb_ids) > 0:
                 return get_error_permission_result(message=f"""User '{tenant_id}' lacks permission for datasets: '{", ".join(error_kb_ids)}'""")
 
+        def _delete_dataset(kb_id, kb):
+            DocumentService.remove_documents_of_kb(kb, kb.tenant_id)
+            FileService.filter_delete([File.tenant_id == kb.tenant_id, File.source_type == FileSource.KNOWLEDGEBASE, File.type == "folder", File.name == kb.name])
+            return KnowledgebaseService.delete_by_id(kb_id)
+
         errors = []
         success_count = 0
         for kb_id, kb in kb_id_instance_pairs:
-            for doc in DocumentService.query(kb_id=kb_id):
-                if not DocumentService.remove_document(doc, tenant_id):
-                    errors.append(f"Remove document '{doc.id}' error for dataset '{kb_id}'")
-                    continue
-                f2d = File2DocumentService.get_by_document_id(doc.id)
-                FileService.filter_delete(
-                    [
-                        File.source_type == FileSource.KNOWLEDGEBASE,
-                        File.id == f2d[0].file_id,
-                    ]
-                )
-                File2DocumentService.delete_by_document_id(doc.id)
-            FileService.filter_delete([File.source_type == FileSource.KNOWLEDGEBASE, File.type == "folder", File.name == kb.name])
-
-            # Drop index for this dataset
             try:
-                from rag.nlp import search
-
-                idxnm = search.index_name(kb.tenant_id)
-                settings.docStoreConn.delete_idx(idxnm, kb_id)
+                deleted = await thread_pool_exec(_delete_dataset, kb_id, kb)
             except Exception as e:
-                logging.warning(f"Failed to drop index for dataset {kb_id}: {e}")
-
-            # delete storage bucket of dataset
-            if hasattr(settings.STORAGE_IMPL, "remove_bucket"):
-                settings.STORAGE_IMPL.remove_bucket(kb.id)
-
-            if not KnowledgebaseService.delete_by_id(kb_id):
+                logging.exception(e)
+                errors.append(f"Delete dataset error for {kb_id}: {e}")
+                continue
+            if not deleted:
                 errors.append(f"Delete dataset error for {kb_id}")
                 continue
             success_count += 1
