@@ -445,7 +445,7 @@ async def async_chat(dialog, messages, stream=True, **kwargs):
                 if ck["content_with_weight"]:
                     kbinfos["chunks"].insert(0, ck)
 
-    knowledges = kb_prompt(kbinfos, max_tokens)
+    knowledges = kb_prompt(kbinfos, max_tokens, metadata_fields=prompt_config.get("metadata_fields"))
     logging.debug("{}->{}".format(" ".join(questions), "\n->".join(knowledges)))
 
     retrieval_ts = timer()

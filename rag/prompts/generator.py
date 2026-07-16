@@ -96,7 +96,7 @@ def message_fit_in(msg, max_length=4000):
     return max_length, msg
 
 
-def kb_prompt(kbinfos, max_tokens, hash_id=False):
+def kb_prompt(kbinfos, max_tokens, hash_id=False, metadata_fields=None):
     from api.db.services.document_service import DocumentService
     from api.db.services.doc_metadata_service import DocMetadataService
 
@@ -114,13 +114,13 @@ def kb_prompt(kbinfos, max_tokens, hash_id=False):
             logging.warning(f"Not all the retrieval into prompt: {len(knowledges)}/{kwlg_len}")
             break
 
-    docs = DocumentService.get_by_ids([get_value(ck, "doc_id", "document_id") for ck in kbinfos["chunks"][:chunks_num]])
-
-    docs_with_meta = {}
-    for d in docs:
-        meta = DocMetadataService.get_document_metadata(d.id)
-        docs_with_meta[d.id] = meta if meta else {}
-    docs = docs_with_meta
+    # Fetch per-document metadata only when at least one metadata field may be rendered.
+    # metadata_fields == [] means "no metadata", so skip the per-document metadata lookups entirely.
+    docs = {}
+    if metadata_fields != []:
+        for d in DocumentService.get_by_ids([get_value(ck, "doc_id", "document_id") for ck in kbinfos["chunks"][:chunks_num]]):
+            meta = DocMetadataService.get_document_metadata(d.id)
+            docs[d.id] = meta if meta else {}
 
     def draw_node(k, line):
         if line is not None and not isinstance(line, str):
@@ -135,6 +135,8 @@ def kb_prompt(kbinfos, max_tokens, hash_id=False):
         cnt += draw_node("Title", get_value(ck, "docnm_kwd", "document_name"))
         cnt += draw_node("URL", ck['url']) if "url" in ck else ""
         for k, v in docs.get(get_value(ck, "doc_id", "document_id"), {}).items():
+            if metadata_fields is not None and k not in metadata_fields:
+                continue
             cnt += draw_node(k, v)
         cnt += "\n└── Content:\n"
         cnt += get_value(ck, "content", "content_with_weight")
