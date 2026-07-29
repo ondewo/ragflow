@@ -111,3 +111,77 @@ def test_less_than_or_equal():
     filters = [{"key": "score", "op": "≤", "value": "5"}]
 
     assert set(meta_filter(metas, filters)) == {"doc1", "doc3"}
+
+
+def test_and_of_several_conditions():
+    # returns only the chunks matching every condition
+    metas = {"owner": {"alice": ["doc1", "doc2"]}, "status": {"active": ["doc1"], "done": ["doc2"]}}
+    filters = [
+        {"key": "owner", "op": "=", "value": "alice"},
+        {"key": "status", "op": "=", "value": "active"},
+    ]
+
+    assert meta_filter(metas, filters) == ["doc1"]
+
+
+def test_and_with_a_leading_condition_that_matches_nothing():
+    # an "and" whose first condition matches nothing is empty, it does not fall through to the second one
+    metas = {"owner": {"alice": ["doc1"]}, "status": {"active": ["doc1"]}}
+    filters = [
+        {"key": "owner", "op": "=", "value": "bob"},
+        {"key": "status", "op": "=", "value": "active"},
+    ]
+
+    assert meta_filter(metas, filters) == []
+
+
+def test_and_with_a_leading_condition_on_an_absent_key():
+    # same, for a key no chunk carries at all
+    metas = {"status": {"active": ["doc1"]}}
+    filters = [
+        {"key": "owner", "op": "=", "value": "alice"},
+        {"key": "status", "op": "=", "value": "active"},
+    ]
+
+    assert meta_filter(metas, filters) == []
+
+
+def test_and_with_every_condition_matching_nothing():
+    # the whole leading run of empty conditions must stay empty, whichever one would have seeded
+    metas = {"owner": {"alice": ["doc1"]}, "status": {"active": ["doc1"]}}
+    filters = [
+        {"key": "owner", "op": "=", "value": "bob"},
+        {"key": "missing", "op": "=", "value": "x"},
+        {"key": "status", "op": "=", "value": "active"},
+    ]
+
+    assert meta_filter(metas, filters) == []
+
+
+def test_or_of_several_conditions():
+    # returns the chunks matching any condition
+    metas = {"owner": {"alice": ["doc1"], "bob": ["doc2"]}, "status": {"done": ["doc3"]}}
+    filters = [
+        {"key": "owner", "op": "=", "value": "alice"},
+        {"key": "status", "op": "=", "value": "done"},
+    ]
+
+    assert set(meta_filter(metas, filters, "or")) == {"doc1", "doc3"}
+
+
+def test_or_with_a_leading_condition_that_matches_nothing():
+    # an empty condition contributes nothing to an "or" but must not discard the others
+    metas = {"owner": {"alice": ["doc1"]}, "status": {"done": ["doc3"]}}
+    filters = [
+        {"key": "owner", "op": "=", "value": "bob"},
+        {"key": "status", "op": "=", "value": "done"},
+    ]
+
+    assert meta_filter(metas, filters, "or") == ["doc3"]
+
+
+def test_no_conditions():
+    # no condition at all yields no chunks
+    metas = {"owner": {"alice": ["doc1"]}}
+
+    assert meta_filter(metas, []) == []

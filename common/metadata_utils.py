@@ -40,7 +40,7 @@ def convert_conditions(metadata_condition):
 
 
 def meta_filter(metas: dict, filters: list[dict], logic: str = "and"):
-    doc_ids = set([])
+    doc_ids = None
 
     def filter_out(v2docs, operator, value):
         ids = []
@@ -147,16 +147,16 @@ def meta_filter(metas: dict, filters: list[dict], logic: str = "and"):
             v2docs = metas[k]
             ids = filter_out(v2docs, f["op"], f["value"])
 
-        if not doc_ids:
+        if doc_ids is None:
             doc_ids = set(ids)
+        elif logic == "and":
+            doc_ids = doc_ids & set(ids)
         else:
-            if logic == "and":
-                doc_ids = doc_ids & set(ids)
-                if not doc_ids:
-                    return []
-            else:
-                doc_ids = doc_ids | set(ids)
-    return list(doc_ids)
+            doc_ids = doc_ids | set(ids)
+
+        if logic == "and" and not doc_ids:
+            return []
+    return list(doc_ids or [])
 
 
 async def apply_meta_data_filter(
