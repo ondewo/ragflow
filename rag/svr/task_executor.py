@@ -159,16 +159,19 @@ def set_progress(task_id, from_page=0, to_page=-1, prog=None, msg="Processing...
         if prog is not None:
             d["progress"] = prog
 
-        TaskService.update_progress(task_id, d)
+        try:
+            TaskService.update_progress(task_id, d)
+        finally:
+            close_connection()
 
-        close_connection()
         if cancel:
             raise TaskCanceledException(msg)
         logging.info(f"set_progress({task_id}), progress: {prog}, progress_msg: {msg}")
     except TaskCanceledException:
         raise
     except DoesNotExist:
-        logging.warning(f"set_progress({task_id}) got exception DoesNotExist")
+        logging.warning(f"set_progress({task_id}) got exception DoesNotExist; canceling the task")
+        raise TaskCanceledException(msg)
     except Exception as e:
         logging.exception(f"set_progress({task_id}), progress: {prog}, progress_msg: {msg}, got exception: {e}")
 
