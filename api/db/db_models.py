@@ -560,14 +560,16 @@ class PostgresDatabaseLock:
 
     @with_retry(max_retries=3, retry_delay=1.0)
     def lock(self):
-        cursor = self.db.execute_sql("SELECT pg_try_advisory_lock(%s)", (self.lock_id,))
-        ret = cursor.fetchone()
-        if ret[0] == 0:
-            raise Exception(f"acquire postgres lock {self.lock_name} timeout")
-        elif ret[0] == 1:
+        if self.timeout < 0:
+            self.db.execute_sql("SELECT pg_advisory_lock(%s)", (self.lock_id,))
             return True
-        else:
-            raise Exception(f"failed to acquire lock {self.lock_name}")
+
+        self.db.execute_sql("SELECT set_config('lock_timeout', %s, false)", (str(self.timeout * 1000),))
+        try:
+            self.db.execute_sql("SELECT pg_advisory_lock(%s)", (self.lock_id,))
+        finally:
+            self.db.execute_sql("RESET lock_timeout")
+        return True
 
     @with_retry(max_retries=3, retry_delay=1.0)
     def unlock(self):
