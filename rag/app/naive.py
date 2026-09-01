@@ -678,7 +678,7 @@ class Markdown(MarkdownParser):
                 images.append(img_obj)
         return images, cache
 
-    def __call__(self, filename, binary=None, separate_tables=True, delimiter=None, return_section_images=False):
+    def __call__(self, filename, binary=None, separate_tables=True, delimiter=None, return_section_images=False, max_inline_tokens=0):
         if binary:
             encoding = find_codec(binary)
             txt = binary.decode(encoding, errors="ignore")
@@ -686,11 +686,12 @@ class Markdown(MarkdownParser):
             with open(filename, "r") as f:
                 txt = f.read()
 
-        remainder, tables = self.extract_tables_and_remainder(f"{txt}\n", separate_tables=separate_tables)
-        # To eliminate duplicate tables in chunking result, uncomment code below and set separate_tables to True in line 410.
-        # extractor = MarkdownElementExtractor(remainder)
-        extractor = MarkdownElementExtractor(txt)
-        image_refs = self.extract_image_urls_with_lines(txt)
+        remainder, tables = self.extract_tables_and_remainder(
+            f"{txt}\n", separate_tables=separate_tables, max_inline_tokens=max_inline_tokens
+        )
+        parsing_text = remainder
+        extractor = MarkdownElementExtractor(parsing_text)
+        image_refs = self.extract_image_urls_with_lines(parsing_text)
         element_sections = extractor.extract_elements(delimiter, include_meta=True)
 
         sections = []
@@ -901,7 +902,7 @@ def chunk(filename, binary=None, from_page=0, to_page=100000, lang="Chinese", ca
         sections, tables, section_images = markdown_parser(
             filename,
             binary,
-            separate_tables=False,
+            max_inline_tokens=int(parser_config.get("chunk_token_num", 128)),
             delimiter=parser_config.get("delimiter", "\n!?;。；！？"),
             return_section_images=True,
         )
@@ -942,7 +943,7 @@ def chunk(filename, binary=None, from_page=0, to_page=100000, lang="Chinese", ca
                 soup = markdown_parser.md_to_html(section_text)
                 hyperlink_urls = markdown_parser.get_hyperlink_urls(soup)
                 urls.update(hyperlink_urls)
-        res = tokenize_table(tables, doc, is_english)
+        res = tokenize_table(tables, doc, is_english, max_table_tokens=int(parser_config.get("chunk_token_num", 128)))
         callback(0.8, "Finish parsing.")
 
     elif re.search(r"\.(htm|html)$", filename, re.IGNORECASE):

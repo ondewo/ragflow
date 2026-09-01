@@ -19,12 +19,14 @@ import re
 
 from markdown import markdown
 
+from common.token_utils import num_tokens_from_string
+
 
 class RAGFlowMarkdownParser:
     def __init__(self, chunk_token_num=128):
         self.chunk_token_num = int(chunk_token_num)
 
-    def extract_tables_and_remainder(self, markdown_text, separate_tables=True):
+    def extract_tables_and_remainder(self, markdown_text, separate_tables=True, max_inline_tokens=0):
         tables = []
         working_text = markdown_text
 
@@ -33,14 +35,20 @@ class RAGFlowMarkdownParser:
             last_end = 0
             for match in pattern.finditer(working_text):
                 raw_table = match.group()
-                table_list.append(raw_table)
-                if separate_tables:
+                html_table = markdown(raw_table, extensions=["markdown.extensions.tables"]) if render else raw_table
+                if max_inline_tokens > 0:
+                    keep_inline = num_tokens_from_string(html_table) <= max_inline_tokens
+                else:
+                    keep_inline = not separate_tables
+                    table_list.append(raw_table)
+
+                if keep_inline:
+                    new_text += working_text[last_end : match.start()] + html_table + "\n\n"
+                else:
+                    if max_inline_tokens > 0:
+                        table_list.append(raw_table)
                     # Skip this match (i.e., remove it)
                     new_text += working_text[last_end : match.start()] + "\n\n"
-                else:
-                    # Replace with rendered HTML
-                    html_table = markdown(raw_table, extensions=["markdown.extensions.tables"]) if render else raw_table
-                    new_text += working_text[last_end : match.start()] + html_table + "\n\n"
                 last_end = match.end()
             new_text += working_text[last_end:]
             return new_text

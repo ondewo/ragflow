@@ -372,24 +372,62 @@ def tokenize_chunks_with_images(chunks, doc, eng, images, child_delimiters_patte
     return res
 
 
-def tokenize_table(tbls, doc, eng, batch_size=10):
+def split_html_table_rows(html: str, max_tokens: int):
+    """
+    Split a rendered HTML table into row groups of at most `max_tokens` or one row if it doesn't fit within `max_tokens`
+
+    :param html: One rendered ``<table>`` element
+    :param max_tokens: Token budget for the rows in each group
+
+    :return: One or more ``<table>`` elements whose rows together are exactly the input's rows
+    """
+    if max_tokens <= 0 or num_tokens_from_string(html) <= max_tokens:
+        return [html]
+
+    body = re.search(r"<tbody>(.*)</tbody>", html, re.DOTALL)
+    if not body:
+        return [html]
+
+    rows = re.findall(r"<tr>.*?</tr>", body.group(1), re.DOTALL)
+    if len(rows) < 2:
+        return [html]
+
+    head = html[: body.start(1)]
+    tail = html[body.end(1) :]
+
+    groups, current, current_tokens = [], [], 0
+    for row in rows:
+        row_tokens = num_tokens_from_string(row)
+        if current and current_tokens + row_tokens > max_tokens:
+            groups.append(head + "".join(current) + tail)
+            current, current_tokens = [], 0
+        current.append(row)
+        current_tokens += row_tokens
+    if current:
+        groups.append(head + "".join(current) + tail)
+
+    return groups
+
+
+def tokenize_table(tbls, doc, eng, batch_size=10, max_table_tokens=0):
     res = []
     # add tables
     for (img, rows), poss in tbls:
         if not rows:
             continue
         if isinstance(rows, str):
-            d = copy.deepcopy(doc)
-            tokenize(d, rows, eng)
-            d["content_with_weight"] = rows
-            d["doc_type_kwd"] = "table"
-            if img:
-                d["image"] = img
-                if d["content_with_weight"].find("<tr>") < 0:
-                    d["doc_type_kwd"] = "image"
-            if poss:
-                add_positions(d, poss)
-            res.append(d)
+            for part in split_html_table_rows(rows, max_table_tokens):
+                d = copy.deepcopy(doc)
+                tokenize(d, part, eng)
+                d["content_with_weight"] = part
+                d["doc_type_kwd"] = "table"
+                if img:
+                    d["image"] = img
+                    if d["content_with_weight"].find("<tr>") < 0:
+                        d["doc_type_kwd"] = "image"
+                if poss:
+                    add_positions(d, poss)
+                res.append(d)
             continue
         de = "; " if eng else "； "
         for i in range(0, len(rows), batch_size):
