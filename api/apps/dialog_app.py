@@ -66,6 +66,9 @@ async def set_dialog():
         req["rerank_id"] = ""
     similarity_threshold = req.get("similarity_threshold", 0.1)
     vector_similarity_weight = req.get("vector_similarity_weight", 0.3)
+    dedup_threshold = req.get("dedup_threshold", 0.0)
+    dedup_before_rerank = req.get("dedup_before_rerank", False)
+    rerank_candidates = req.get("rerank_candidates", 0)
     llm_setting = req.get("llm_setting", {})
     meta_data_filter = req.get("meta_data_filter", {})
     prompt_config = req["prompt_config"]
@@ -122,6 +125,9 @@ async def set_dialog():
                 "rerank_id": rerank_id,
                 "similarity_threshold": similarity_threshold,
                 "vector_similarity_weight": vector_similarity_weight,
+                "dedup_threshold": dedup_threshold,
+                "dedup_before_rerank": dedup_before_rerank,
+                "rerank_candidates": rerank_candidates,
                 "icon": icon
             }
             if not DialogService.save(**dia):

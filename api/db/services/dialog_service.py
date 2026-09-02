@@ -118,6 +118,9 @@ class DialogService(CommonService):
             cls.model.prompt_config,
             cls.model.similarity_threshold,
             cls.model.vector_similarity_weight,
+            cls.model.dedup_threshold,
+            cls.model.dedup_before_rerank,
+            cls.model.rerank_candidates,
             cls.model.top_n,
             cls.model.top_k,
             cls.model.do_refer,
@@ -428,6 +431,9 @@ async def async_chat(dialog, messages, stream=True, **kwargs):
                     aggs=True,
                     rerank_mdl=rerank_mdl,
                     rank_feature=label_question(" ".join(questions), kbs),
+                    dedup_threshold=dialog.dedup_threshold or 0.0,
+                    dedup_before_rerank=bool(dialog.dedup_before_rerank),
+                    rerank_candidates=dialog.rerank_candidates or 0,
                 )
                 if prompt_config.get("toc_enhance"):
                     cks = await retriever.retrieval_by_toc(" ".join(questions), kbinfos["chunks"], tenant_ids, chat_mdl, dialog.top_n)

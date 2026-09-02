@@ -33,6 +33,10 @@ from common.misc_utils import thread_pool_exec
 def index_name(uid): return f"ragflow_{uid}"
 
 
+DEDUP_SHINGLE_SIZE = 5
+DEDUP_WORD_RE = re.compile(r"\w+", re.UNICODE)
+
+
 class Dealer:
     def __init__(self, dataStore: DocStoreConnection):
         self.qryr = query.FulltextQueryer()
@@ -291,6 +295,66 @@ class Dealer:
                 rank_fea.append(nor / np.sqrt(denor) / q_denor)
         return np.array(rank_fea) * 10. + pageranks
 
+    @staticmethod
+    def _dedup_shingles(text: str, size: int = DEDUP_SHINGLE_SIZE) -> set[str]:
+        """The set of overlapping `size`-word sequences in `text`, used as its near-duplicate signature."""
+        words = DEDUP_WORD_RE.findall(text.lower())
+        if not words:
+            return set()
+        if len(words) <= size:
+            return {" ".join(words)}
+        return {" ".join(words[i: i + size]) for i in range(len(words) - size + 1)}
+
+    @staticmethod
+    def _suppress_near_duplicates(texts: list[str], threshold: float) -> list[int]:
+        """Greedily keep the first of every group of near-duplicates.
+
+        `texts` is in ranking order, so the survivor of a group is always its best-ranked member.
+        Returns the positions to keep, in the same order. A threshold of 0 or less disables suppression.
+        """
+        if threshold <= 0:
+            return list(range(len(texts)))
+        kept: list[int] = []
+        kept_shingles: list[set[str]] = []
+        for i, text in enumerate(texts):
+            shingles = Dealer._dedup_shingles(text)
+            if not shingles:
+                kept.append(i)
+                kept_shingles.append(shingles)
+                continue
+            duplicate = False
+            for other in kept_shingles:
+                if not other:
+                    continue
+                intersection = len(shingles & other)
+                union = len(shingles) + len(other) - intersection
+                if union and intersection / union >= threshold:
+                    duplicate = True
+                    break
+            if not duplicate:
+                kept.append(i)
+                kept_shingles.append(shingles)
+        return kept
+
+    def _without_near_duplicates(self, sres, threshold: float):
+        """A copy of `sres` with near-duplicate chunks removed, keeping the best-ranked of each group."""
+        texts = [sres.field[chunk_id].get("content_with_weight", "") for chunk_id in sres.ids]
+        keep = Dealer._suppress_near_duplicates(texts, threshold)
+        if len(keep) == len(sres.ids):
+            return sres
+        ids = [sres.ids[k] for k in keep]
+        logging.debug(f"Dealer.retrieval dedup@{threshold} before rerank: {len(sres.ids)} -> {len(ids)} chunks")
+        return self.SearchResult(
+            total=len(ids),
+            ids=ids,
+            query_vector=sres.query_vector,
+            field={chunk_id: sres.field[chunk_id] for chunk_id in ids},
+            highlight=sres.highlight,
+            aggregation=sres.aggregation,
+            keywords=sres.keywords,
+            group_docs=sres.group_docs,
+        )
+
     def rerank(self, sres, query, tkweight=0.3,
                vtweight=0.7, cfield="content_ltks",
                rank_feature: dict | None = None
@@ -378,14 +442,21 @@ class Dealer:
             rerank_mdl=None,
             highlight=False,
             rank_feature: dict | None = {PAGERANK_FLD: 10},
+            dedup_threshold: float = 0.0,
+            dedup_before_rerank: bool = False,
+            rerank_candidates: int = 0,
     ):
         ranks = {"total": 0, "chunks": [], "doc_aggs": {}}
         if not question:
             return ranks
 
-        # Ensure RERANK_LIMIT is multiple of page_size
-        RERANK_LIMIT = math.ceil(64 / page_size) * page_size if page_size > 1 else 1
-        RERANK_LIMIT = max(30, RERANK_LIMIT)
+        if rerank_candidates > 0:
+            RERANK_LIMIT = max(rerank_candidates, page_size)
+        else:
+            # Ensure RERANK_LIMIT is multiple of page_size
+            RERANK_LIMIT = math.ceil(64 / page_size) * page_size if page_size > 1 else 1
+            RERANK_LIMIT = max(30, RERANK_LIMIT)
+
         req = {
             "kb_ids": kb_ids,
             "doc_ids": doc_ids,
@@ -403,6 +474,9 @@ class Dealer:
 
         sres = await self.search(req, [index_name(tid) for tid in tenant_ids], kb_ids, embd_mdl, highlight,
                            rank_feature=rank_feature)
+
+        if dedup_threshold > 0 and dedup_before_rerank:
+            sres = self._without_near_duplicates(sres, dedup_threshold)
 
         if rerank_mdl and sres.total > 0:
             sim, tsim, vsim = self.rerank_by_model(
@@ -440,6 +514,12 @@ class Dealer:
         # When vector_similarity_weight is 0, similarity_threshold is not meaningful for term-only scores.
         post_threshold = 0.0 if vector_similarity_weight <= 0 else similarity_threshold
         valid_idx = [int(i) for i in sorted_idx if sim_np[i] >= post_threshold]
+        if dedup_threshold > 0 and not dedup_before_rerank and len(valid_idx) > 1:
+            texts = [sres.field[sres.ids[i]].get("content_with_weight", "") for i in valid_idx]
+            keep = Dealer._suppress_near_duplicates(texts, dedup_threshold)
+            if len(keep) < len(valid_idx):
+                logging.debug(f"Dealer.retrieval dedup@{dedup_threshold}: {len(valid_idx)} -> {len(keep)} chunks")
+                valid_idx = [valid_idx[k] for k in keep]
         filtered_count = len(valid_idx)
         ranks["total"] = int(filtered_count)
 

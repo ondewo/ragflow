@@ -969,6 +969,11 @@ class Dialog(DataBaseModel):
     similarity_threshold = FloatField(default=0.2)
     vector_similarity_weight = FloatField(default=0.3)
 
+    dedup_threshold = FloatField(default=0.0, help_text="drop a retrieved chunk whose word-shingle similarity to a better-ranked one reaches this; 0 disables")
+    dedup_before_rerank = BooleanField(null=False, default=False, help_text="suppress near-duplicates before reranking, so the reranker spends its budget on distinct chunks")
+
+    rerank_candidates = IntegerField(default=0, help_text="how many retrieved chunks the reranker scores; 0 derives it from top_n")
+
     top_n = IntegerField(default=6)
 
     top_k = IntegerField(default=1024)
@@ -1417,6 +1422,9 @@ def migrate_db():
     alter_db_add_column(migrator, "document", "suffix", CharField(max_length=32, null=False, default="", help_text="The real file extension suffix", index=True))
     alter_db_add_column(migrator, "api_4_conversation", "errors", TextField(null=True, help_text="errors"))
     alter_db_add_column(migrator, "dialog", "meta_data_filter", JSONField(null=True, default={}))
+    alter_db_add_column(migrator, "dialog", "dedup_threshold", FloatField(default=0.0))
+    alter_db_add_column(migrator, "dialog", "dedup_before_rerank", BooleanField(null=False, default=False))
+    alter_db_add_column(migrator, "dialog", "rerank_candidates", IntegerField(default=0))
     alter_db_column_type(migrator, "canvas_template", "title", JSONField(null=True, default=dict, help_text="Canvas title"))
     alter_db_column_type(migrator, "canvas_template", "description", JSONField(null=True, default=dict, help_text="Canvas description"))
     alter_db_add_column(migrator, "user_canvas", "canvas_category", CharField(max_length=32, null=False, default="agent_canvas", help_text="agent_canvas|dataflow_canvas", index=True))
