@@ -1581,6 +1581,9 @@ async def retrieval_test(tenant_id):
     similarity_threshold = float(req.get("similarity_threshold", 0.2))
     vector_similarity_weight = float(req.get("vector_similarity_weight", 0.3))
     top = int(req.get("top_k", 1024))
+    rerank_candidates = int(req.get("rerank_candidates", 0))
+    dedup_threshold = float(req.get("dedup_threshold", 0.0))
+    dedup_before_rerank = bool(req.get("dedup_before_rerank", False))
     highlight_val = req.get("highlight", None)
     if highlight_val is None:
         highlight = False
@@ -1625,6 +1628,9 @@ async def retrieval_test(tenant_id):
             rerank_mdl=rerank_mdl,
             highlight=highlight,
             rank_feature=label_question(question, kbs),
+            dedup_threshold=dedup_threshold,
+            dedup_before_rerank=dedup_before_rerank,
+            rerank_candidates=rerank_candidates,
         )
         if toc_enhance:
             chat_mdl = LLMBundle(kb.tenant_id, LLMType.CHAT)
