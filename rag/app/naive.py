@@ -689,7 +689,7 @@ class Markdown(MarkdownParser):
         remainder, tables = self.extract_tables_and_remainder(
             f"{txt}\n", separate_tables=separate_tables, max_inline_tokens=max_inline_tokens
         )
-        parsing_text = remainder
+        parsing_text = remainder.removesuffix("\n")
         extractor = MarkdownElementExtractor(parsing_text)
         image_refs = self.extract_image_urls_with_lines(parsing_text)
         element_sections = extractor.extract_elements(delimiter, include_meta=True)
