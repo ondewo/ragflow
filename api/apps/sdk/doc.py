@@ -682,10 +682,10 @@ async def metadata_batch_update(dataset_id, tenant_id):
         if not isinstance(d, dict) or not d.get("key"):
             return get_error_data_result(message="Each delete requires key.")
    
+    target_doc_ids = set(KnowledgebaseService.list_documents_by_ids([dataset_id]))
+
     if document_ids:
-        kb_doc_ids = KnowledgebaseService.list_documents_by_ids([dataset_id])
-        target_doc_ids = set(kb_doc_ids)
-        invalid_ids = set(document_ids) - set(kb_doc_ids)
+        invalid_ids = set(document_ids) - target_doc_ids
         if invalid_ids:
             return get_error_data_result(message=f"These documents do not belong to dataset {dataset_id}: {', '.join(invalid_ids)}")
         target_doc_ids = set(document_ids)
