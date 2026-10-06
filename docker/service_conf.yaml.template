@@ -37,6 +37,10 @@ os:
   # normalization search pipeline on start-up (requires OpenSearch >= 2.10).
   # hybrid_search_pipeline: 'ragflow_hybrid_pipeline'
   # hybrid_search_weights: [0.5, 0.5]   # [text/BM25 leg, vector/KNN leg]
+  # Optional urllib3 connection-pool size for the OpenSearch client. The
+  # client library default of 10 serialises concurrent upload, parse and
+  # retrieval traffic over ten sockets.
+  # pool_size: 32
 infinity:
   uri: '${INFINITY_HOST:-infinity}:23817'
   postgres_port: 5432
@@ -112,6 +116,12 @@ user_default_llm:
 #   stale_timeout: 30
 # GaussDB metadata DB is configured through GAUSSDB_METADATA_* environment
 # variables and is intentionally not rendered into service_conf.yaml.
+# When bucket names one physical bucket shared by every knowledge base, set
+# prefix_path as well. It gives each logical bucket its own key prefix, so an
+# object lands at {prefix_path}/{logical_bucket}/{filename}, and that prefix is
+# what lets remove_bucket scope a dataset teardown to a single logical bucket.
+# Without it the keys of one logical bucket cannot be told apart from the rest,
+# so a shared bucket cannot be torn down at all.
 # s3:
 #   access_key: 'access_key'
 #   secret_key: 'secret_key'
@@ -121,6 +131,10 @@ user_default_llm:
 #   prefix_path: 'prefix_path'
 #   signature_version: 'v4'
 #   addressing_style: 'path'
+#   connect_timeout: 10        # seconds to establish a connection
+#   read_timeout: 60           # seconds to read a response
+#   retries_max_attempts: 5    # applied with botocore retry mode 'standard'
+#   pool_size: 32              # pooled connections; botocore's default of 10 serialises concurrent I/O
 # oss:
 #   access_key: '${ACCESS_KEY}'
 #   secret_key: '${SECRET_KEY}'

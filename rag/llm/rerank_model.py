@@ -321,7 +321,7 @@ class LmStudioRerank(Base):
 class OpenAI_APIRerank(Base):
     _FACTORY_NAME = "OpenAI-API-Compatible"
 
-    def __init__(self, key, model_name, base_url, max_token=MAX_RERANK_TOKEN):
+    def __init__(self, key, model_name, base_url, max_token=MAX_RERANK_TOKEN, default_headers=None):
         super().__init__(key, model_name, max_token)
         normalized_base_url = (base_url or "").strip()
         if "/rerank" in normalized_base_url:
@@ -329,6 +329,16 @@ class OpenAI_APIRerank(Base):
         else:
             self.base_url = urljoin(f"{normalized_base_url.rstrip('/')}/", "rerank").rstrip("/")
         self.headers = {"Content-Type": "application/json", "Authorization": f"Bearer {key}"}
+        # Extra HTTP headers configured for this model instance (gateways in front
+        # of a self-hosted endpoint often require one beyond the bearer key). The
+        # keyword is named rather than taken out of `**kwargs` so that the single
+        # construction site in `TenantLLMService.model_instance` can tell, from the
+        # signature alone, that this client really does send them -- and so that
+        # `MWSRerank` and `FuturMixRerank`, which replace this constructor with a
+        # narrower one, keep reading as the unsupported clients they are. Opt in
+        # only: with none configured the request headers are exactly as before.
+        if default_headers:
+            self.headers.update(default_headers)
         self.model_name = model_name.split("___")[0]
 
     def _compute_rank(self, query: str, texts: List) -> Tuple[np.ndarray, int]:

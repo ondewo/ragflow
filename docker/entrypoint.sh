@@ -196,24 +196,27 @@ export LD_LIBRARY_PATH="/usr/lib/x86_64-linux-gnu/"
 PY=python3
 
 # -----------------------------------------------------------------------------
-# Select Nginx Configuration based on API_PROXY_SCHEME
+# Resolve API_PROXY_SCHEME and select the matching Nginx configuration
+#
+# The scheme picks both the nginx config and, further below, which servers are
+# started, so it is normalized once here: anything that is neither "hybrid" nor
+# "go" - an unset variable included - means the pure python stack. Leaving it
+# unnormalized would start nginx in front of no backend at all.
 # -----------------------------------------------------------------------------
+if [[ "${API_PROXY_SCHEME}" != "hybrid" && "${API_PROXY_SCHEME}" != "go" ]]; then
+    API_PROXY_SCHEME="python"
+fi
+
 NGINX_CONF_DIR="/etc/nginx/conf.d"
-if [ -n "$API_PROXY_SCHEME" ]; then
-    if [[ "${API_PROXY_SCHEME}" == "hybrid" ]]; then
-        cp -f "$NGINX_CONF_DIR/ragflow.conf.hybrid" "$NGINX_CONF_DIR/ragflow.conf"
-        echo "Applied nginx config: ragflow.conf.hybrid"
-    elif [[ "${API_PROXY_SCHEME}" == "go" ]]; then
-        cp -f "$NGINX_CONF_DIR/ragflow.conf.golang" "$NGINX_CONF_DIR/ragflow.conf"
-        echo "Applied nginx config: ragflow.conf.golang (default)"
-    else
-        cp -f "$NGINX_CONF_DIR/ragflow.conf.python" "$NGINX_CONF_DIR/ragflow.conf"
-        echo "Applied nginx config: ragflow.conf.python"
-    fi
+if [[ "${API_PROXY_SCHEME}" == "hybrid" ]]; then
+    cp -f "$NGINX_CONF_DIR/ragflow.conf.hybrid" "$NGINX_CONF_DIR/ragflow.conf"
+    echo "Applied nginx config: ragflow.conf.hybrid"
+elif [[ "${API_PROXY_SCHEME}" == "go" ]]; then
+    cp -f "$NGINX_CONF_DIR/ragflow.conf.golang" "$NGINX_CONF_DIR/ragflow.conf"
+    echo "Applied nginx config: ragflow.conf.golang"
 else
-    # Default to python backend
     cp -f "$NGINX_CONF_DIR/ragflow.conf.python" "$NGINX_CONF_DIR/ragflow.conf"
-    echo "Default: applied nginx config: ragflow.conf.python"
+    echo "Applied nginx config: ragflow.conf.python"
 fi
 
 # -----------------------------------------------------------------------------

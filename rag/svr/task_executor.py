@@ -214,6 +214,12 @@ def set_progress(task_id, from_page=0, to_page=-1, prog=None, msg="Processing...
     try:
         if prog is not None and prog < 0:
             msg = "[ERROR]" + msg
+        if TaskService.get_or_none(id=task_id) is None:
+            # The row is gone once the document, its dataset or the whole tenant is deleted, and also when the
+            # document is queued again. Nothing reads the progress of such a task any more, so give it up here
+            # instead of parsing on and keeping the executor busy.
+            logging.warning(f"set_progress({task_id}) found no task row; canceling the task")
+            raise TaskCanceledException(msg)
         cancel = has_canceled(task_id)
 
         if cancel:
@@ -232,16 +238,18 @@ def set_progress(task_id, from_page=0, to_page=-1, prog=None, msg="Processing...
 
         TaskService.update_progress(task_id, d)
 
-        close_connection()
         if cancel:
             raise TaskCanceledException(msg)
         logging.info(f"set_progress({task_id}), progress: {prog}, progress_msg: {msg}")
     except TaskCanceledException:
         raise
     except DoesNotExist:
-        logging.warning(f"set_progress({task_id}) got exception DoesNotExist")
+        logging.warning(f"set_progress({task_id}) got exception DoesNotExist; canceling the task")
+        raise TaskCanceledException(msg)
     except Exception as e:
         logging.exception(f"set_progress({task_id}), progress: {prog}, progress_msg: {msg}, got exception: {e}")
+    finally:
+        close_connection()
 
 
 async def collect():

@@ -1663,7 +1663,7 @@ def test_chat_create_additional_guards_contract(rest_client, clear_chats):
 
 
 @pytest.mark.p2
-def test_chat_create_rejects_unparsed_document(rest_client, clear_chats, create_document):
+def test_chat_create_accepts_unparsed_document(rest_client, clear_chats, create_document):
     dataset_id, _ = create_document()
     res = rest_client.post(
         "/chats",
@@ -1671,8 +1671,8 @@ def test_chat_create_rejects_unparsed_document(rest_client, clear_chats, create_
     )
     assert res.status_code == 200
     payload = res.json()
-    assert payload["code"] == 102, payload
-    assert "doesn't own parsed file" in payload["message"], payload
+    assert payload["code"] == 0, payload
+    assert payload["data"]["dataset_ids"] == [dataset_id], payload
 
 
 @pytest.mark.p2
@@ -2059,7 +2059,7 @@ def test_chat_update_mapping_and_validation_branches_p2(rest_client, clear_chats
 
 
 @pytest.mark.p2
-def test_chat_update_rejects_unparsed_document(rest_client, clear_chats, create_document):
+def test_chat_update_accepts_unparsed_document(rest_client, clear_chats, create_document):
     dataset_id, _ = create_document()
     create_res = rest_client.post("/chats", json={"name": "restful_chat_update_unparsed_target", "dataset_ids": []})
     assert create_res.status_code == 200, create_res.text
@@ -2070,5 +2070,5 @@ def test_chat_update_rejects_unparsed_document(rest_client, clear_chats, create_
     res = rest_client.patch(f"/chats/{chat_id}", json={"dataset_ids": [dataset_id]})
     assert res.status_code == 200, res.text
     payload = res.json()
-    assert payload["code"] == 102, payload
-    assert "doesn't own parsed file" in payload["message"], payload
+    assert payload["code"] == 0, payload
+    assert payload["data"]["dataset_ids"] == [dataset_id], payload

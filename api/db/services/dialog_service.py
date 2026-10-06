@@ -220,6 +220,8 @@ class DialogService(CommonService):
             cls.model.prompt_config,
             cls.model.similarity_threshold,
             cls.model.vector_similarity_weight,
+            cls.model.dedup_threshold,
+            cls.model.dedup_before_rerank,
             cls.model.top_n,
             cls.model.rerank_candidates_count,
             cls.model.top_k,
@@ -678,6 +680,8 @@ async def async_chat(dialog, messages, stream=True, **kwargs):
 
     prompt_config = dialog.prompt_config
     rerank_candidates_count = getattr(dialog, "rerank_candidates_count", 64)
+    dedup_threshold = float(getattr(dialog, "dedup_threshold", 0.0) or 0.0)
+    dedup_before_rerank = bool(getattr(dialog, "dedup_before_rerank", False))
     include_reference_metadata, metadata_fields = _resolve_reference_metadata(prompt_config, request_payload=kwargs)
     field_map = KnowledgebaseService.get_field_map(dialog.kb_ids)
     logging.debug(f"field_map retrieved: {field_map}")
@@ -769,6 +773,8 @@ async def async_chat(dialog, messages, stream=True, **kwargs):
                 rerank_mdl=rerank_mdl,
                 rank_feature=label_question(" ".join(questions), kbs),
                 rerank_candidates_count=rerank_candidates_count,
+                dedup_threshold=dedup_threshold,
+                dedup_before_rerank=dedup_before_rerank,
             )
             if prompt_config.get("toc_enhance"):
                 cks = await retriever.retrieval_by_toc(" ".join(questions), kbinfos["chunks"], tenant_ids, chat_mdl, dialog.top_n)

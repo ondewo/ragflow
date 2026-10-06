@@ -15,7 +15,7 @@
 #
 
 import importlib
-from unittest.mock import Mock
+from unittest.mock import ANY, Mock
 
 # rag.utils.s3_conn and common.settings import each other (s3_conn needs
 # settings.S3; settings re-imports RAGFlowS3). The cycle resolves only when
@@ -39,7 +39,9 @@ def test_s3_accepts_region_config_key(monkeypatch):
     storage, _, client_factory = _new_storage(monkeypatch, {"region": "us-east-1", "bucket": "ragflow"})
 
     assert storage.region_name == "us-east-1"
-    client_factory.assert_called_once_with("s3", region_name="us-east-1")
+    # config carries the request timeouts and retry policy, covered in
+    # test_s3_conn_hardening.py.
+    client_factory.assert_called_once_with("s3", region_name="us-east-1", config=ANY)
 
 
 def test_s3_health_uses_head_bucket_without_writing(monkeypatch):

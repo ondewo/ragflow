@@ -310,6 +310,9 @@ async def update_document(tenant_id, dataset_id, document_id):
         logging.exception(e)
         return get_error_data_result(message="Database operation failed")
     renamed_doc = map_doc_keys(doc)
+    # The document row carries no meta_fields column; the doc-meta index is the
+    # only store, so report it from there rather than echoing the request.
+    renamed_doc["meta_fields"] = DocMetadataService.get_document_metadata(doc.id)
     return get_result(data=renamed_doc)
 
 
@@ -418,10 +421,12 @@ async def metadata_batch_update(dataset_id, tenant_id):
         if not isinstance(d, dict) or not d.get("key"):
             return get_error_data_result(message="Each delete requires key.")
 
-    target_doc_ids = set()
+    # An absent document_ids means every document of the dataset, so that an
+    # empty selector updates all of them and a metadata_condition alone
+    # narrows that set instead of an empty one.
+    target_doc_ids = set(KnowledgebaseService.list_documents_by_ids([dataset_id]))
     if document_ids:
-        kb_doc_ids = KnowledgebaseService.list_documents_by_ids([dataset_id])
-        invalid_ids = set(document_ids) - set(kb_doc_ids)
+        invalid_ids = set(document_ids) - target_doc_ids
         if invalid_ids:
             return get_error_data_result(message=f"These documents do not belong to dataset {dataset_id}: {', '.join(invalid_ids)}")
         target_doc_ids = set(document_ids)
@@ -1433,13 +1438,14 @@ async def update_metadata(tenant_id, dataset_id):
         if not isinstance(d, dict) or not d.get("key"):
             return get_error_data_result(message="Each delete requires key.")
 
-    # Initialize target document IDs
-    target_doc_ids = set()
+    # Target every document of the dataset unless document_ids narrows it, so
+    # that an empty selector updates all of them and a metadata_condition
+    # alone narrows that set instead of an empty one.
+    target_doc_ids = set(KnowledgebaseService.list_documents_by_ids([dataset_id]))
 
     # If document_ids provided, validate they belong to the dataset
     if document_ids:
-        kb_doc_ids = KnowledgebaseService.list_documents_by_ids([dataset_id])
-        invalid_ids = set(document_ids) - set(kb_doc_ids)
+        invalid_ids = set(document_ids) - target_doc_ids
         if invalid_ids:
             return get_error_data_result(message=f"These documents do not belong to dataset {dataset_id}: {', '.join(invalid_ids)}")
         target_doc_ids = set(document_ids)

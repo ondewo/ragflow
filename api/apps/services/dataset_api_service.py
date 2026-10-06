@@ -23,7 +23,6 @@ from api.db.db_models import Connector2Kb, Document, File, SyncLogs
 from api.db.joint_services.tenant_model_service import get_composite_model_name_by_ids, resolve_model_config, resolve_model_id
 from api.db.services.connector_service import Connector2KbService, SyncLogsService
 from api.db.services.document_service import DocumentService, queue_raptor_o_graphrag_tasks
-from api.db.services.file2document_service import File2DocumentService
 from api.db.services.file_service import FileService
 from api.db.services.knowledgebase_service import KnowledgebaseService, validate_dataset_embedding_models
 from api.db.services.task_service import GRAPH_RAPTOR_FAKE_DOC_ID, TaskService
@@ -183,28 +182,20 @@ def _delete_datasets_sync(tenant_id: str, ids: list = None, delete_all: bool = F
             {"status": TaskStatus.CANCEL},
         )
 
-        for doc in DocumentService.query(kb_id=kb_id):
-            if not DocumentService.remove_document(doc, tenant_id):
-                errors.append(f"Remove document '{doc.id}' error for dataset '{kb_id}'")
-                continue
-            f2d = File2DocumentService.get_by_document_id(doc.id)
-            if f2d:
-                FileService.filter_delete(
-                    [
-                        File.source_type == FileSource.KNOWLEDGEBASE,
-                        File.id == f2d[0].file_id,
-                    ]
-                )
-            else:
-                # Normal uploads create a File2Document row via FileService.add_file_from_kb.
-                # A missing row usually means stale/partial data (e.g. link removed earlier,
-                # failed post-insert file linkage, or legacy rows). Deletion still proceeds.
-                logging.warning(
-                    "delete_datasets: document %s in dataset %s has no File2Document row; skipping linked file delete",
-                    doc.id,
-                    kb_id,
-                )
-            File2DocumentService.delete_by_document_id(doc.id)
+        # One bulk pass per dataset rather than a round trip per document: the stored
+        # objects, the chunks, the parsing tasks, the document metadata, the file
+        # mappings and the document rows. The stored objects are torn down there,
+        # ahead of every row that names them, and a backend that reports the
+        # dataset-wide teardown as failed raises out of that call: give up on this
+        # dataset wherever that happens, leaving it deletable again rather than
+        # stranding its objects with nothing left to find them by.
+        try:
+            DocumentService.remove_documents_of_kb(kb_id=kb_id, tenant_id=tenant_id)
+        except Exception as e:
+            logging.exception(f"Failed to remove documents of dataset {kb_id}")
+            errors.append(f"Remove documents error for dataset '{kb_id}': {e}")
+            continue
+
         FileService.filter_delete([File.source_type == FileSource.KNOWLEDGEBASE, File.type == "folder", File.name == kb.name])
 
         # Drop index for this dataset
@@ -229,8 +220,8 @@ def _delete_datasets_sync(tenant_id: str, ids: list = None, delete_all: bool = F
         Connector2KbService.filter_delete([Connector2Kb.kb_id == kb_id])
         SyncLogsService.filter_delete([SyncLogs.kb_id == kb_id])
 
-        # Sweep anything the per-document loop could not see, including rows
-        # written by a sync that was already in flight when deletion started.
+        # Sweep anything the bulk removal could not see, including rows written
+        # by a sync that was already in flight when deletion started.
         stranded = DocumentService.filter_delete([Document.kb_id == kb_id])
         if stranded:
             logging.warning("delete_datasets: removed %s stranded document rows for dataset %s", stranded, kb_id)

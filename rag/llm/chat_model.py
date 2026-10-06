@@ -317,8 +317,15 @@ class Base(ABC):
     def __init__(self, key, model_name, base_url, **kwargs):
         timeout = int(os.environ.get("LLM_TIMEOUT_SECONDS", 600))
         self.base_url = ensure_v1(base_url)
-        self.client = OpenAI(api_key=key, base_url=self.base_url, timeout=timeout)
-        self.async_client = AsyncOpenAI(api_key=key, base_url=self.base_url, timeout=timeout)
+        # Extra HTTP headers configured for this model instance (gateways in front
+        # of a self-hosted endpoint often require one beyond the bearer key). Opt
+        # in only: with none configured the client is built exactly as before.
+        default_headers = kwargs.pop("default_headers", None) or None
+        client_kwargs = {"api_key": key, "base_url": self.base_url, "timeout": timeout}
+        if default_headers:
+            client_kwargs["default_headers"] = default_headers
+        self.client = OpenAI(**client_kwargs)
+        self.async_client = AsyncOpenAI(**client_kwargs)
         self.model_name = model_name
         # Configure retry parameters
         self.max_retries = kwargs.get("max_retries", int(os.environ.get("LLM_MAX_RETRIES", 5)))

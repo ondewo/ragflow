@@ -20,6 +20,7 @@ import re
 
 from markdown import markdown
 
+from common.token_utils import num_tokens_from_string
 from rag.nlp.delim import (
     compile_delimiter_pattern,
     normalize_text_newlines,
@@ -33,7 +34,7 @@ class RAGFlowMarkdownParser:
     def __init__(self, chunk_token_num=128):
         self.chunk_token_num = int(chunk_token_num)
 
-    def extract_tables_and_remainder(self, markdown_text, separate_tables=True):
+    def extract_tables_and_remainder(self, markdown_text, separate_tables=True, max_inline_tokens=0):
         tables = []
         working_text = markdown_text
 
@@ -58,14 +59,23 @@ class RAGFlowMarkdownParser:
                     logger.debug("markdown table pass: skipping match inside a code fence at %d", match.start())
                     continue
                 raw_table = match.group()
-                table_list.append(raw_table)
-                if separate_tables:
+                html_table = markdown(raw_table, extensions=["markdown.extensions.tables"]) if render else raw_table
+                if max_inline_tokens > 0:
+                    # size decides: a table that fits stays inline with the prose around it, an
+                    # oversized one is extracted so tokenize_table can split it over several chunks.
+                    keep_inline = num_tokens_from_string(html_table) <= max_inline_tokens
+                else:
+                    keep_inline = not separate_tables
+                    table_list.append(raw_table)
+
+                if keep_inline:
+                    # Replace with rendered HTML
+                    new_text += working_text[last_end : match.start()] + html_table + "\n"
+                else:
+                    if max_inline_tokens > 0:
+                        table_list.append(raw_table)
                     # Skip this match (i.e., remove it)
                     new_text += working_text[last_end : match.start()] + "\n"
-                else:
-                    # Replace with rendered HTML
-                    html_table = markdown(raw_table, extensions=["markdown.extensions.tables"]) if render else raw_table
-                    new_text += working_text[last_end : match.start()] + html_table + "\n"
                 last_end = match.end()
             new_text += working_text[last_end:]
             return new_text
@@ -143,11 +153,22 @@ class RAGFlowMarkdownParser:
                         logger.debug("html table pass: skipping match inside a code fence at %d", match.start())
                         continue
                     raw_table = match.group()
-                    tables.append(raw_table)
-                    if separate_tables:
-                        new_text += working_text[last_end : match.start()] + "\n"
+                    # this pass also sees the tables the markdown pass rendered inline, so it has
+                    # to weigh them by the same budget or it would extract them again right away.
+                    # the match carries the blank lines around the table, which the markdown pass
+                    # did not weigh, so strip them or the two passes disagree at the budget.
+                    if max_inline_tokens > 0:
+                        keep_inline = num_tokens_from_string(raw_table.strip()) <= max_inline_tokens
                     else:
+                        keep_inline = not separate_tables
+                        tables.append(raw_table)
+
+                    if keep_inline:
                         new_text += working_text[last_end : match.start()] + raw_table + "\n"
+                    else:
+                        if max_inline_tokens > 0:
+                            tables.append(raw_table)
+                        new_text += working_text[last_end : match.start()] + "\n"
                     last_end = match.end()
                 new_text += working_text[last_end:]
                 working_text = new_text

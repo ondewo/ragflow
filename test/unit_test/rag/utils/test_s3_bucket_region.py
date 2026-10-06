@@ -42,10 +42,9 @@ def make_storage(monkeypatch, tmp_path, config):
         {"access_key": "test-access", "secret_key": "test-secret", "endpoint_url": "https://s3.test", **config},
     )
     storage = module.RAGFlowS3()
-    # A failed base request must not reconnect or wait before we inspect the
-    # stub queue. The successful write path still uses the real SDK uploader.
+    # A failed base request must not reconnect before we inspect the stub
+    # queue. The successful write path still uses the real SDK uploader.
     monkeypatch.setattr(storage, "__open__", Mock())
-    monkeypatch.setattr(module.time, "sleep", Mock())
     return storage
 
 

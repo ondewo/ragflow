@@ -34,6 +34,13 @@ from common.metadata_utils import dedupe_list
 
 METADATA_ID_BATCH_SIZE = 10000
 
+# A whole-dataset metadata read walks the index with a scroll cursor instead of
+# offset/limit: Elasticsearch and OpenSearch map offset/limit onto from + size and
+# refuse anything past index.max_result_window (10,000 by default), which would cut a
+# dataset's metadata off at the first 10,000 documents.
+METADATA_SCROLL_BATCH_SIZE = 10000
+METADATA_SCROLL_KEEPALIVE = "2m"
+
 
 def _es_response_total(response: Any) -> int | None:
     """Extract the exact total hit count from an ES search response.
@@ -311,6 +318,91 @@ class DocMetadataService:
 
         logging.debug(f"[_search_metadata] Retrieved {len(all_results)} total results for kb_id: {kb_id}")
         return all_results
+
+    @staticmethod
+    def _raw_doc_store_client() -> Any:
+        """
+        Get the backend's native Elasticsearch/OpenSearch client.
+
+        Returns:
+            ``docStoreConn.es`` on Elasticsearch, ``docStoreConn.os`` on OpenSearch, or
+            None on a backend that exposes neither (Infinity, GaussDB). OceanBase answers
+            with its own ES-shaped hybrid search client, which speaks the query DSL but
+            implements only part of the client API.
+        """
+        client = getattr(settings.docStoreConn, "es", None)
+        if client is None:
+            client = getattr(settings.docStoreConn, "os", None)
+        return client
+
+    @classmethod
+    def _iter_all_metadata(cls, kb_ids: list[str]):
+        """
+        Iterate over EVERY metadata row of the given dataset(s).
+
+        A whole-dataset read cannot page with offset/limit: Elasticsearch and OpenSearch
+        map that onto from + size, which the engine refuses past index.max_result_window,
+        and a connector that keeps paging by walking the window with search_after re-reads
+        every earlier page to reach the next one. A scroll cursor has neither problem and
+        reads every row exactly once.
+
+        Args:
+            kb_ids: Dataset IDs (must share a tenant).
+
+        Yields:
+            Tuple of (doc_id, source_dict) for each metadata row.
+        """
+        if not kb_ids:
+            return
+
+        client = cls._raw_doc_store_client()
+        if client is None or not hasattr(client, "scroll"):
+            # Infinity, GaussDB and OceanBase bound nothing at index.max_result_window, so
+            # their offset-paged reader already returns every row. OceanBase does expose an
+            # ES-shaped client on ``es``, hence the scroll API is what decides here, not the
+            # presence of a client.
+            for kb_id in kb_ids:
+                yield from cls._iter_search_results(cls._search_metadata(kb_id, condition={"kb_id": kb_id}))
+            return
+
+        kb = Knowledgebase.get_by_id(kb_ids[0])
+        if not kb:
+            return
+
+        index_name = cls._get_doc_meta_index_name(kb.tenant_id)
+        if not settings.docStoreConn.index_exist(index_name, ""):
+            logging.debug(f"[_iter_all_metadata] Metadata index {index_name} does not exist, nothing to read")
+            return
+
+        scroll_id: str | None = None
+        try:
+            res = client.search(
+                index=index_name,
+                body={"query": {"terms": {"kb_id": list(kb_ids)}}, "size": METADATA_SCROLL_BATCH_SIZE},
+                scroll=METADATA_SCROLL_KEEPALIVE,
+            )
+            while True:
+                scroll_id = res.get("_scroll_id")
+                hits = res.get("hits", {}).get("hits", [])
+                if not hits:
+                    break
+
+                for hit in hits:
+                    doc_id = hit.get("_id", "")
+                    if doc_id:
+                        yield doc_id, hit.get("_source", {})
+
+                if not scroll_id:
+                    logging.warning(f"[_iter_all_metadata] {index_name} returned no scroll id, stopping after {len(hits)} rows")
+                    break
+
+                res = client.scroll(scroll_id=scroll_id, scroll=METADATA_SCROLL_KEEPALIVE)
+        finally:
+            if scroll_id:
+                try:
+                    client.clear_scroll(scroll_id=scroll_id)
+                except Exception as e:
+                    logging.debug(f"[_iter_all_metadata] Failed to clear scroll on {index_name}: {e}")
 
     @classmethod
     def _split_combined_values(cls, meta_fields: dict) -> dict:
@@ -628,6 +720,36 @@ class DocMetadataService:
             return False
 
     @classmethod
+    def delete_kb_metadata(cls, kb_id: str, tenant_id: str) -> int:
+        """
+        Delete the metadata rows of every document of one dataset in a single request.
+
+        Used when a whole dataset is torn down, where deleting row by row would cost one
+        request per document.
+
+        Args:
+            kb_id: Dataset ID whose metadata rows are deleted.
+            tenant_id: Tenant ID owning the per-tenant metadata index.
+
+        Returns:
+            Number of metadata rows deleted. 0 when the dataset has no metadata index,
+            and also when the delete itself failed, which is logged as an error.
+        """
+        try:
+            index_name = cls._get_doc_meta_index_name(tenant_id)
+            if not settings.docStoreConn.index_exist(index_name, ""):
+                logging.debug(f"[delete_kb_metadata] Metadata index {index_name} does not exist, nothing to delete")
+                return 0
+
+            deleted = settings.docStoreConn.delete({"kb_id": kb_id}, index_name, kb_id)
+            logging.debug(f"[delete_kb_metadata] Deleted {deleted} metadata rows of dataset {kb_id}")
+            return int(deleted or 0)
+
+        except Exception as e:
+            logging.error(f"Error deleting metadata for dataset {kb_id}: {e}")
+            return 0
+
+    @classmethod
     def _drop_empty_metadata_table(cls, index_name: str, tenant_id: str) -> None:
         """
         Check if metadata table is empty and drop it if so.
@@ -777,53 +899,11 @@ class DocMetadataService:
             Metadata dictionary in format: {field_name: {value: [doc_ids]}}
         """
         try:
-            # Get tenant_id from first KB
-            kb = Knowledgebase.get_by_id(kb_ids[0])
-            if not kb:
-                return {}
-
-            tenant_id = kb.tenant_id
-            index_name = cls._get_doc_meta_index_name(tenant_id)
-
-            condition = {"kb_id": kb_ids}
-            order_by = OrderByExpr()
-            if not settings.DOC_ENGINE_INFINITY:
-                order_by.asc("id")
-
-            # Paginate to support datasets with more than 10,000 documents.
-            page_size = 1000
-            offset = 0
-            all_results = []
-            while True:
-                batch = settings.docStoreConn.search(
-                    select_fields=["*"],
-                    highlight_fields=[],
-                    condition=condition,
-                    match_expressions=[],
-                    order_by=order_by,
-                    offset=offset,
-                    limit=page_size,
-                    index_names=index_name,
-                    knowledgebase_ids=kb_ids,
-                )
-                batch_docs = list(cls._iter_search_results(batch))
-                if not batch_docs:
-                    break
-                all_results.extend(batch_docs)
-                logging.debug(
-                    "[get_flatted_meta_by_kbs] offset=%d batch=%d total=%d kb_ids=%s",
-                    offset,
-                    len(batch_docs),
-                    len(all_results),
-                    kb_ids,
-                )
-                if len(batch_docs) < page_size:
-                    break
-                offset += page_size
-
-            # Aggregate metadata over all retrieved results
+            # Aggregate metadata over every metadata row of the dataset(s)
             meta = {}
-            for doc_id, doc in all_results:
+            doc_count = 0
+            for doc_id, doc in cls._iter_all_metadata(kb_ids):
+                doc_count += 1
                 doc_meta = cls._extract_metadata(doc)
 
                 for k, v in doc_meta.items():
@@ -839,7 +919,6 @@ class DocMetadataService:
                             meta[k][sv] = []
                         meta[k][sv].append(doc_id)
 
-            doc_count = len(all_results)
             if doc_count >= 100000:
                 logging.warning(
                     "[get_flatted_meta_by_kbs] Large result set: %d documents for KBs %s. Consider performance impact.",
@@ -909,7 +988,11 @@ class DocMetadataService:
         logic: str,
         limit: int,
     ) -> list[str] | None:
-        """ES push-down path for metadata filtering."""
+        """Elasticsearch/OpenSearch push-down path for metadata filtering.
+
+        Both backends speak the same query DSL, so the translated filter runs as-is on
+        either one; the client to send it with is whichever of the two the connector has.
+        """
         from common.metadata_es_filter import (
             UnsupportedMetaFilter,
             build_meta_filter_query,
@@ -917,7 +1000,7 @@ class DocMetadataService:
             is_pushdown_supported,
         )
 
-        es_client = getattr(settings.docStoreConn, "es", None)
+        es_client = cls._raw_doc_store_client()
         if es_client is None:
             return None
 
@@ -1079,8 +1162,7 @@ class DocMetadataService:
         keys: set[str] = set()
         try:
             for kb_id in kb_ids:
-                results = cls._search_metadata(kb_id, condition={"kb_id": kb_id})
-                for _doc_id, doc in cls._iter_search_results(results):
+                for _doc_id, doc in cls._iter_all_metadata([kb_id]):
                     doc_meta = cls._extract_metadata(doc)
                     if not isinstance(doc_meta, dict):
                         continue
@@ -1105,18 +1187,18 @@ class DocMetadataService:
             Dictionary mapping doc_id to meta_fields dict
         """
         try:
-            condition = {"kb_id": kb_id}
             if doc_ids:
-                condition["id"] = doc_ids
-            results = cls._search_metadata(kb_id, condition=condition)
-            if not results:
-                return {}
+                results = cls._search_metadata(kb_id, condition={"kb_id": kb_id, "id": doc_ids})
+                pairs = cls._iter_search_results(results)
+            else:
+                # Whole-dataset read: scroll the index so it is not capped at
+                # index.max_result_window.
+                pairs = cls._iter_all_metadata([kb_id])
 
             # Build mapping: doc_id -> meta_fields
             meta_mapping = {}
 
-            # Use helper to iterate over results
-            for doc_id, doc in cls._iter_search_results(results):
+            for doc_id, doc in pairs:
                 # Extract metadata (handles both JSON strings and dicts)
                 doc_meta = cls._extract_metadata(doc)
                 if doc_meta:
@@ -1170,12 +1252,13 @@ class DocMetadataService:
             return "string"
 
         try:
-            condition = {"kb_id": kb_id}
             if doc_ids:
-                condition["id"] = doc_ids
-            results = cls._search_metadata(kb_id, condition=condition)
-            if not results:
-                return {}
+                results = cls._search_metadata(kb_id, condition={"kb_id": kb_id, "id": doc_ids})
+                pairs = cls._iter_search_results(results)
+            else:
+                # Whole-dataset read: scroll the index so it is not capped at
+                # index.max_result_window.
+                pairs = cls._iter_all_metadata([kb_id])
 
             # Aggregate metadata
             summary = {}
@@ -1183,8 +1266,7 @@ class DocMetadataService:
 
             logging.debug(f"[METADATA SUMMARY] KB: {kb_id}, doc_ids: {doc_ids}")
 
-            # Use helper to iterate over results in any format
-            for doc_id, doc in cls._iter_search_results(results):
+            for doc_id, doc in pairs:
                 doc_meta = cls._extract_metadata(doc)
 
                 for k, v in doc_meta.items():

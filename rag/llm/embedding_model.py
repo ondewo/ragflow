@@ -937,11 +937,20 @@ class HubrisEmbed(OpenAIEmbed):
 class OpenAI_APIEmbed(OpenAIEmbed):
     _FACTORY_NAME = ["VLLM", "OpenAI-API-Compatible"]
 
-    def __init__(self, key, model_name, base_url):
+    def __init__(self, key, model_name, base_url, default_headers=None):
         if not base_url:
             raise ValueError("url cannot be None")
         base_url = ensure_v1(base_url)
-        self.client = OpenAI(api_key=key, base_url=base_url)
+        # Extra HTTP headers configured for this model instance (gateways in front
+        # of a self-hosted endpoint often require one beyond the bearer key). The
+        # keyword is named rather than taken out of `**kwargs` so that the single
+        # construction site in `TenantLLMService.model_instance` can tell, from the
+        # signature alone, that this client really does send them. Opt in only:
+        # with none configured the client is built exactly as before.
+        client_kwargs = {"api_key": key, "base_url": base_url}
+        if default_headers:
+            client_kwargs["default_headers"] = default_headers
+        self.client = OpenAI(**client_kwargs)
         self.model_name = model_name.split("___")[0]
 
 

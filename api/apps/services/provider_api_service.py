@@ -19,7 +19,7 @@ import logging
 import asyncio
 from urllib.parse import urlparse, urlunparse
 
-from common.constants import LLMType, ActiveStatusEnum, ModelVerifyStatusEnum
+from common.constants import LLMType, ActiveStatusEnum, ModelTypeBinary, ModelVerifyStatusEnum, StatusEnum
 from common.settings import FACTORY_LLM_INFOS
 from api.db.db_models import DB
 from api.db.joint_services.tenant_model_service import resolve_model_config, delete_models_by_instance_ids, delete_instances_by_provider_ids
@@ -98,6 +98,88 @@ def _scrub_url_secrets(text: str, url: str | None) -> str:
     return text
 
 
+API_KEY_MASK: str = "***"
+
+
+def _mask_api_key(api_key: str | None) -> str:
+    """Return a placeholder in place of a stored API key, keeping only whether one is set.
+
+    Callers (and the provider form in the UI) need to know that an instance has a
+    credential; none of them need its value, and responses are routinely logged.
+    An unset key stays an empty string so "no key configured" remains distinguishable.
+    """
+    return API_KEY_MASK if api_key else ""
+
+
+def _is_masked_api_key(api_key: str | dict | None) -> bool:
+    """Whether *api_key* is the placeholder a previous response handed out.
+
+    A client that echoes an instance back unchanged submits the mask rather than the
+    real credential, which must leave the stored key alone instead of overwriting it.
+    """
+    return isinstance(api_key, str) and api_key == API_KEY_MASK
+
+
+def _validate_default_headers(default_headers: dict | None) -> dict[str, str] | None:
+    """Validate the custom HTTP headers an instance adds to every model request.
+
+    Args:
+        default_headers (dict | None): header mapping as submitted, or None when the request omits it.
+
+    Returns:
+        dict[str, str] | None: the validated mapping, or None when nothing was submitted.
+
+    Raises:
+        ValueError: when the value is not an object of string keys and string values.
+    """
+    if default_headers is None:
+        return None
+    if not isinstance(default_headers, dict):
+        raise ValueError("default_headers must be an object of header name to header value")
+    for name, value in default_headers.items():
+        if not isinstance(name, str) or not name.strip():
+            raise ValueError("default_headers keys must be non-empty header names")
+        if not isinstance(value, str):
+            raise ValueError(f"default_headers['{name}'] must be a string")
+
+    # One rule set governs both sides. The read path raises on any header it
+    # will not put on the wire, so validating against it here answers a bad
+    # header with a 400 at save time rather than storing a configuration that
+    # fails every model request made with the instance.
+    return _contract_validate_default_headers({name.strip(): value for name, value in default_headers.items()})
+
+
+# `api.db.services.tenant_llm_service` pulls the user/tenant model layer in behind it, and
+# this module is imported by every provider call, so the two header helpers it owns are
+# resolved at call time -- as `_find_model_dependents` resolves its dependent tables below.
+def _contract_validate_default_headers(default_headers: dict[str, str] | None) -> dict[str, str] | None:
+    """Apply the one header rule set shared by the write path, the read path and the probe."""
+    from api.db.services.tenant_llm_service import validate_default_headers
+
+    return validate_default_headers(default_headers)
+
+
+def _probe_model(registry: dict, provider_name: str, *args, default_headers: dict[str, str] | None = None, **kwargs):
+    """Build the client the verification probe talks to, carrying the instance's headers.
+
+    A gateway in front of a self-hosted endpoint rejects any request that arrives
+    without its header, so a probe built without the configured headers reports a
+    correct configuration as a bad credential -- and verification runs before the
+    write, so the instance is never saved.
+
+    Whether the client sends the headers is decided by the same `default_headers_kwarg`
+    the live request is built with, so the probe and the request that follows it either
+    both carry the headers or both do not. Deciding it here a second time would let
+    verification pass a configuration the live path cannot construct, or probe with a
+    header the live path silently drops.
+    """
+    from api.db.services.tenant_llm_service import default_headers_kwarg
+
+    model_cls = registry[provider_name]
+    headers_kwarg = default_headers_kwarg(client_cls=model_cls, default_headers=default_headers, factory_name=provider_name)
+    return model_cls(*args, **headers_kwarg, **kwargs)
+
+
 def _normalize_provider_api_key(provider_name: str, api_key: str | dict | None):
     if provider_name == "VLLM" and not api_key:
         return "x"
@@ -138,8 +220,139 @@ def _validate_bedrock_api_key_config(api_key: str | dict | None) -> dict[str, ob
     }
 
 
+# Not every entry in the factory model dictionary carries a context length: 64 of them omit
+# it, across every model type (DeepInfra chat and embedding entries make up most of them).
+# Fall back to the same default the rest of the API uses.
+_DEFAULT_MAX_TOKENS: int = 8192
+
+
 def _factory_llm_name(llm: dict) -> str:
     return llm.get("name") or llm.get("llm_name", "")
+
+
+# Tenant-wide default models, as the (model-name column, tenant_model id column) pair per type.
+_TENANT_DEFAULT_COLUMNS: tuple[tuple[int, str, str], ...] = (
+    (ModelTypeBinary.CHAT.value, "llm_id", "tenant_llm_id"),
+    (ModelTypeBinary.EMBEDDING.value, "embd_id", "tenant_embd_id"),
+    (ModelTypeBinary.ASR.value, "asr_id", "tenant_asr_id"),
+    (ModelTypeBinary.VISION.value, "img2txt_id", "tenant_img2txt_id"),
+    (ModelTypeBinary.RERANK.value, "rerank_id", "tenant_rerank_id"),
+    (ModelTypeBinary.TTS.value, "tts_id", "tenant_tts_id"),
+    (ModelTypeBinary.OCR.value, "ocr_id", "tenant_ocr_id"),
+)
+
+# How many dependents to name per model. Enough to act on, short enough to read.
+_DEPENDENT_SAMPLE_SIZE: int = 5
+
+
+def _model_name_references(model_name: str, instance_name: str, provider_name: str) -> list[str]:
+    """Every spelling a model-name column can use to point at one model."""
+    return [model_name, f"{model_name}@{provider_name}", f"{model_name}@{instance_name}@{provider_name}"]
+
+
+def _find_model_dependents(tenant_id: str, provider_name: str, instance_name: str, model_obj) -> list[str]:
+    """Name the chat assistants and datasets that still use *model_obj*.
+
+    Args:
+        tenant_id (str): tenant that owns the dependents.
+        provider_name (str): provider/factory name the model belongs to.
+        instance_name (str): instance name the model belongs to.
+        model_obj (TenantModel): the model row about to be deleted.
+
+    Returns:
+        list[str]: one human-readable entry per dependent, empty when nothing references the model.
+    """
+    # The dependent tables are read only when a deletion is checked, so they are resolved
+    # here rather than widening the import surface of a module every provider call loads.
+    from api.db.db_models import Dialog, Knowledgebase
+
+    # A stored reference is either the model's tenant_model id (the tenant_*_id columns) or
+    # its composite name (the *_id name columns). Resolution prefers the id and falls back
+    # to the name, so a reference check has to look at both to be conclusive.
+    dependent_tables = (
+        (ModelTypeBinary.CHAT.value, "chat assistant", Dialog, Dialog.llm_id, Dialog.tenant_llm_id),
+        (ModelTypeBinary.RERANK.value, "chat assistant", Dialog, Dialog.rerank_id, Dialog.tenant_rerank_id),
+        (ModelTypeBinary.EMBEDDING.value, "dataset", Knowledgebase, Knowledgebase.embd_id, Knowledgebase.tenant_embd_id),
+    )
+
+    references = _model_name_references(model_obj.model_name, instance_name, provider_name)
+    dependents: dict[tuple[str, str], str] = {}
+
+    for type_bit, label, table, name_column, id_column in dependent_tables:
+        if not model_obj.model_type & type_bit:
+            continue
+        rows = (
+            table.select(table.id, table.name)
+            .where(
+                table.tenant_id == tenant_id,
+                table.status == StatusEnum.VALID.value,
+                (name_column.in_(references)) | (id_column == model_obj.id),
+            )
+            .limit(_DEPENDENT_SAMPLE_SIZE)
+        )
+        for row in rows:
+            dependents[(label, row.id)] = f"{label} '{row.name}' ({row.id})"
+
+    return list(dependents.values())
+
+
+def _model_deletion_blockers(tenant_id: str, provider_name: str, models: list[tuple[str, object]]) -> list[str]:
+    """One message per still-referenced model, naming its dependents.
+
+    Args:
+        tenant_id (str): tenant that owns the models and their dependents.
+        provider_name (str): provider/factory name the models belong to.
+        models (list[tuple[str, object]]): (instance_name, model row) pairs about to be deleted.
+
+    Returns:
+        list[str]: a message per blocked model, empty when the deletion may go ahead.
+    """
+    blockers: list[str] = []
+    for instance_name, model_obj in models:
+        dependents = _find_model_dependents(tenant_id, provider_name, instance_name, model_obj)
+        if dependents:
+            composite_name = f"{model_obj.model_name}@{instance_name}@{provider_name}"
+            blockers.append(f"Model '{composite_name}' is still used by {', '.join(dependents)}.")
+    return blockers
+
+
+def _clear_tenant_default_models(tenant_id: str, provider_name: str, models: list[tuple[str, object]]) -> None:
+    """Drop *models* from the tenant's default-model settings.
+
+    A default pointing at a deleted model resolves to nothing and fails the next request
+    that needs that model type, so the tenant row is detached as part of the deletion.
+
+    Args:
+        tenant_id (str): tenant whose defaults to clean up.
+        provider_name (str): provider/factory name the models belong to.
+        models (list[tuple[str, object]]): (instance_name, model row) pairs being deleted.
+    """
+    # Resolved at call time, as in _find_model_dependents: the tenant row is read only when
+    # something is actually being deleted.
+    from api.db.services.user_service import TenantService
+
+    tenant = TenantService.get_or_none(id=tenant_id)
+    if tenant is None:
+        return
+
+    cleared: dict[str, str | None] = {}
+    for instance_name, model_obj in models:
+        references = _model_name_references(model_obj.model_name, instance_name, provider_name)
+        for type_bit, name_column, id_column in _TENANT_DEFAULT_COLUMNS:
+            if not model_obj.model_type & type_bit:
+                continue
+            if getattr(tenant, name_column) in references:
+                cleared[name_column] = ""
+            if getattr(tenant, id_column) == model_obj.id:
+                cleared[id_column] = None
+
+    if cleared:
+        TenantService.update_by_id(tenant_id, cleared)
+
+
+def _instance_models(instance_objs: list) -> list[tuple[str, object]]:
+    """Pair every model of every instance with its instance name."""
+    return [(instance_obj.instance_name, model_obj) for instance_obj in instance_objs for model_obj in TenantModelService.get_models_by_instance_id(instance_obj.id)]
 
 
 def list_providers(tenant_id: str, all_available: bool = False):
@@ -237,6 +450,12 @@ def delete_provider(tenant_id: str, provider_id_or_name: str):
         return False, f"Provider {provider_id_or_name} not found"
     instance_objs = TenantModelInstanceService.get_all_by_provider_id(provider_obj.id)
     if instance_objs:
+        models = _instance_models(instance_objs)
+        blockers = _model_deletion_blockers(tenant_id, provider_obj.provider_name, models)
+        if blockers:
+            return False, " ".join(blockers + ["Repoint or delete the dependents before deleting the provider."])
+        _clear_tenant_default_models(tenant_id, provider_obj.provider_name, models)
+
         instance_ids = [instance_obj.id for instance_obj in instance_objs]
         delete_models_by_instance_ids(instance_ids)
         delete_instances_by_provider_ids([provider_obj.id])
@@ -372,6 +591,7 @@ async def update_provider_instance(
     region: str,
     model_info: list[dict] = None,
     verify: bool = True,
+    default_headers: dict | None = None,
 ):
     """
     Update a provider instance.
@@ -395,6 +615,8 @@ async def update_provider_instance(
         }
     }]
     :param verify: verify api_key
+    :param default_headers: custom HTTP headers to add to every request to this instance;
+        None leaves the stored headers untouched, {} removes them
     :return: (success, result_or_error_message)
     """
     if not provider_id_or_name:
@@ -423,8 +645,14 @@ async def update_provider_instance(
     api_key = _normalize_provider_api_key(provider_name, api_key)
     region = (region or "").strip()
 
+    # Responses hand out a placeholder instead of the stored key, so a client that submits
+    # the instance back unchanged means "keep the key I was never shown".
+    if _is_masked_api_key(api_key):
+        api_key = instance_obj.api_key
+
     try:
         bedrock_api_key_config = _validate_bedrock_api_key_config(api_key) if provider_name == "Bedrock" else None
+        default_headers = _validate_default_headers(default_headers)
     except ValueError as error:
         return False, str(error)
     bedrock_api_key_auth = bedrock_api_key_config is not None
@@ -435,11 +663,18 @@ async def update_provider_instance(
     if api_key:
         api_key_str = api_key if isinstance(api_key, str) else json.dumps(api_key)
 
+    existing_extra = json.loads(instance_obj.extra) if instance_obj.extra else {}
+    # The probe has to use the headers the instance will carry once this update lands:
+    # the submitted set, the stored set when the request omits the field, and none at
+    # all when it submits {} to clear them. Any other set either rejects a correct
+    # configuration or accepts one that cannot reach the endpoint.
+    effective_headers = default_headers if default_headers is not None else existing_extra.get("default_headers")
+
     # Verify api_key
     model_verify_result = {}
     runtime_verify = verify and not bedrock_api_key_auth
     if runtime_verify:
-        success, msg, model_verify_result = await verify_api_key(provider_name, api_key, base_url, region, model_info)
+        success, msg, model_verify_result = await verify_api_key(provider_name, api_key, base_url, region, model_info, default_headers=effective_headers)
         if not success:
             return False, msg
 
@@ -456,8 +691,13 @@ async def update_provider_instance(
     if region:
         extra_fields["region"] = region
     # Preserve existing extra fields not overwritten
-    existing_extra = json.loads(instance_obj.extra) if instance_obj.extra else {}
     existing_extra.update(extra_fields)
+    if default_headers is not None:
+        # An omitted default_headers keeps the stored headers; an empty object removes them.
+        if default_headers:
+            existing_extra["default_headers"] = default_headers
+        else:
+            existing_extra.pop("default_headers", None)
     update_dict["extra"] = json.dumps(existing_extra)
     TenantModelInstanceService.update_by_id(instance_obj.id, update_dict)
 
@@ -526,7 +766,7 @@ async def update_provider_instance(
                         update_dict["model_type"] = target_model_type
                     db_extra = json.loads(existing_model_names[llm_name].extra) if existing_model_names[llm_name].extra else {}
                     db_extra_fields = {
-                        "max_tokens": llm["max_tokens"],
+                        "max_tokens": llm.get("max_tokens", _DEFAULT_MAX_TOKENS),
                         "is_tools": llm.get("is_tools", False),
                         "thinking": "thinking" in llm.get("features", []),
                     }
@@ -545,8 +785,9 @@ async def update_provider_instance(
                     if runtime_verify:
                         verify_status = model_verify_result.get(llm_name, ModelVerifyStatusEnum.UNKNOWN.value)
                         extra_fields["verify"] = verify_status
+                    max_tokens = llm.get("max_tokens", _DEFAULT_MAX_TOKENS)
                     success, _msg = add_model_to_instance(
-                        tenant_id, provider_name, effective_instance_name, **{"model_type": _factory_model_types(llm), "model_name": llm_name, "max_tokens": llm["max_tokens"], "extra": extra_fields}
+                        tenant_id, provider_name, effective_instance_name, **{"model_type": _factory_model_types(llm), "model_name": llm_name, "max_tokens": max_tokens, "extra": extra_fields}
                     )
                     if not success:
                         msg += _msg
@@ -555,7 +796,16 @@ async def update_provider_instance(
     return True, "success"
 
 
-async def create_provider_instance(tenant_id: str, provider_id_or_name: str, instance_name: str, api_key: str | dict, base_url: str, region: str, model_info: list[dict] = None):
+async def create_provider_instance(
+    tenant_id: str,
+    provider_id_or_name: str,
+    instance_name: str,
+    api_key: str | dict,
+    base_url: str,
+    region: str,
+    model_info: list[dict] = None,
+    default_headers: dict | None = None,
+):
     """
     Create a provider instance.
 
@@ -577,6 +827,7 @@ async def create_provider_instance(tenant_id: str, provider_id_or_name: str, ins
             "field2": "'value2"
         }
     }]
+    :param default_headers: custom HTTP headers to add to every request to this instance
     :return: (success, result_or_error_message)
     """
     if not provider_id_or_name:
@@ -604,6 +855,7 @@ async def create_provider_instance(tenant_id: str, provider_id_or_name: str, ins
 
     try:
         bedrock_api_key_config = _validate_bedrock_api_key_config(api_key) if provider_name == "Bedrock" else None
+        default_headers = _validate_default_headers(default_headers)
     except ValueError as error:
         return False, str(error)
     bedrock_api_key_auth = bedrock_api_key_config is not None
@@ -619,7 +871,7 @@ async def create_provider_instance(tenant_id: str, provider_id_or_name: str, ins
             return False, "At least one Bedrock model must be selected"
         model_verify_result = {}
     else:
-        success, verify_msg, model_verify_result = await verify_api_key(provider_name, api_key, base_url, region, model_info)
+        success, verify_msg, model_verify_result = await verify_api_key(provider_name, api_key, base_url, region, model_info, default_headers=default_headers)
         if not success:
             return False, verify_msg
 
@@ -628,6 +880,8 @@ async def create_provider_instance(tenant_id: str, provider_id_or_name: str, ins
         extra_fields["base_url"] = base_url
     if region:
         extra_fields["region"] = region
+    if default_headers:
+        extra_fields["default_headers"] = default_headers
     TenantModelInstanceService.create_instance(provider_id=provider_obj.id, instance_name=instance_name, api_key=api_key_str, extra=json.dumps(extra_fields))
     if model_info:
         msg = ""
@@ -655,7 +909,7 @@ async def create_provider_instance(tenant_id: str, provider_id_or_name: str, ins
                 **{
                     "model_type": _factory_model_types(llm),
                     "model_name": llm_name,
-                    "max_tokens": llm["max_tokens"],
+                    "max_tokens": llm.get("max_tokens", _DEFAULT_MAX_TOKENS),
                     "extra": {
                         "is_tools": llm.get("is_tools", False),
                         "thinking": "thinking" in llm.get("features", []),
@@ -752,7 +1006,14 @@ async def _run_verification(label: str, coro, timeout_seconds: int):
         return False, f"\nFail to access {label}.{str(e)}"
 
 
-async def verify_api_key(provider_id_or_name: str, api_key: str | dict, base_url: str = None, region: str = None, model_info: list[dict] = None):
+async def verify_api_key(
+    provider_id_or_name: str,
+    api_key: str | dict,
+    base_url: str = None,
+    region: str = None,
+    model_info: list[dict] = None,
+    default_headers: dict[str, str] | None = None,
+):
     """
     Verify API key for a provider.
 
@@ -769,10 +1030,23 @@ async def verify_api_key(provider_id_or_name: str, api_key: str | dict, base_url
             "field2": "'value2"
         }
     }]
+    :param default_headers: custom HTTP headers the instance adds to every model request;
+        the probe sends them so the endpoint is reached exactly as a live request will reach it
     :return: (success, result_or_error_message)
     """
     if not provider_id_or_name:
         return False, "Provider ID or name is required", {}
+
+    # One rule set governs the write path, the read path and this probe. Headers read
+    # back from a stored instance have not been through it in this process, and a value
+    # carrying CR/LF would inject further headers into the probe request. Nothing to
+    # check when no headers are configured, which is also every provider but a
+    # gateway-fronted one.
+    if default_headers:
+        try:
+            default_headers = _contract_validate_default_headers(default_headers)
+        except ValueError as error:
+            return False, str(error), {}
 
     provider_obj = None
     if provider_id_or_name:
@@ -857,7 +1131,7 @@ async def verify_api_key(provider_id_or_name: str, api_key: str | dict, base_url
                     continue
                 label = f"embedding model({llm['llm_name']})"
                 try:
-                    mdl = EmbeddingModel[provider_name](api_key_str, llm["llm_name"], base_url=base_url)
+                    mdl = _probe_model(EmbeddingModel, provider_name, api_key_str, llm["llm_name"], base_url=base_url, default_headers=default_headers)
                 except Exception as e:
                     logging.exception("Fail to init %s", label)
                     msg += f"\nFail to access {label}.{str(e)}"
@@ -881,7 +1155,7 @@ async def verify_api_key(provider_id_or_name: str, api_key: str | dict, base_url
                     continue
                 label = f"model({provider_name}/{llm['llm_name']})"
                 try:
-                    mdl = ChatModel[provider_name](api_key_str, llm["llm_name"], base_url=base_url, **extra)
+                    mdl = _probe_model(ChatModel, provider_name, api_key_str, llm["llm_name"], base_url=base_url, default_headers=default_headers, **extra)
                 except Exception as e:
                     logging.exception("Fail to init %s", label)
                     msg += f"\nFail to access {label}.{str(e)}"
@@ -916,7 +1190,7 @@ async def verify_api_key(provider_id_or_name: str, api_key: str | dict, base_url
                     msg += f"\nRerank model from {provider_name} is not supported yet."
                     model_verify_result[llm["llm_name"]] = ModelVerifyStatusEnum.FAIL.value
                     continue
-                mdl = RerankModel[provider_name](api_key_str, llm["llm_name"], base_url=base_url)
+                mdl = _probe_model(RerankModel, provider_name, api_key_str, llm["llm_name"], base_url=base_url, default_headers=default_headers)
                 label = f"model({provider_name}/{llm['llm_name']})"
                 ok, result = await _run_verification(label, asyncio.to_thread(mdl.similarity, "What's the weather?", ["Is it sunny today?"]), timeout_seconds)
                 if not ok:
@@ -1059,7 +1333,7 @@ def show_provider_instance(tenant_id: str, provider_id_or_name: str, instance_id
         "provider_id": provider_id,
         "region": extra_fields.get("region", ""),
         "base_url": extra_fields.get("base_url", ""),
-        "api_key": instance_obj.api_key,
+        "api_key": _mask_api_key(instance_obj.api_key),
         "status": instance_obj.status,
     }
 
@@ -1081,6 +1355,7 @@ def drop_provider_instances(tenant_id: str, provider_id_or_name: str, instance_i
         return False, f"No provider found for provider '{provider_id_or_name}'"
     provider_id = provider_obj.id
     not_exist_instances = []
+    instance_objs = []
     instance_ids = []
     for instance_id_or_name in instance_id_or_names:
         instance_obj = None
@@ -1093,9 +1368,17 @@ def drop_provider_instances(tenant_id: str, provider_id_or_name: str, instance_i
         if not instance_obj:
             not_exist_instances.append(instance_id_or_name)
             continue
+        instance_objs.append(instance_obj)
         instance_ids.append(instance_obj.id)
     if not_exist_instances:
         return False, f"No instance found for provider '{provider_id_or_name}' and instance '{not_exist_instances}'"
+
+    models = _instance_models(instance_objs)
+    blockers = _model_deletion_blockers(tenant_id, provider_obj.provider_name, models)
+    if blockers:
+        return False, " ".join(blockers + ["Repoint or delete the dependents before deleting the instance."])
+    _clear_tenant_default_models(tenant_id, provider_obj.provider_name, models)
+
     delete_models_by_instance_ids(instance_ids)
     TenantModelInstanceService.delete_by_ids(instance_ids)
     return True, None
@@ -1441,7 +1724,13 @@ async def delete_models_from_instance(tenant_id: str, provider_id_or_name: str, 
     if not_exist_models:
         return False, f"Models {not_exist_models} not found for provider '{provider_id_or_name}' and instance '{instance_id_or_name}'"
 
-    TenantModelService.delete_by_ids([model_obj.id for model_obj in model_objs if model_obj.model_name in model_name])
+    models_to_delete = [(instance_obj.instance_name, model_obj) for model_obj in model_objs if model_obj.model_name in model_name]
+    blockers = _model_deletion_blockers(tenant_id, provider_obj.provider_name, models_to_delete)
+    if blockers:
+        return False, " ".join(blockers + ["Repoint or delete the dependents before deleting the model."])
+    _clear_tenant_default_models(tenant_id, provider_obj.provider_name, models_to_delete)
+
+    TenantModelService.delete_by_ids([model_obj.id for _instance_name, model_obj in models_to_delete])
 
     return True, "success"
 

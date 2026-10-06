@@ -332,6 +332,11 @@ async def create_provider_instance(tenant_id: str = None, provider_id_or_name: s
             model_info:
               type: object
               description: Model info.
+            default_headers:
+              type: object
+              description: Custom HTTP headers added to every request to this instance.
+              additionalProperties:
+                type: string
     responses:
       200:
         description: Instance created successfully.
@@ -361,9 +366,10 @@ async def create_provider_instance(tenant_id: str = None, provider_id_or_name: s
     base_url = data.get("base_url", "")
     region = data.get("region", "")
     model_info = data.get("model_info", [])
+    default_headers = data.get("default_headers")
 
     try:
-        success, msg = await provider_api_service.create_provider_instance(tenant_id, provider_id_or_name, instance_name, api_key, base_url, region, model_info)
+        success, msg = await provider_api_service.create_provider_instance(tenant_id, provider_id_or_name, instance_name, api_key, base_url, region, model_info, default_headers=default_headers)
         if success:
             return get_result(message=msg)
         else:
@@ -615,6 +621,11 @@ async def update_provider_instance(tenant_id: str = None, provider_id_or_name: s
             verify:
               type: boolean
               description: Verify api_key and base_url, default true
+            default_headers:
+              type: object
+              description: Custom HTTP headers added to every request to this instance. Omit to keep the stored headers, send an empty object to remove them.
+              additionalProperties:
+                type: string
     responses:
       200:
         description: Instance updated successfully.
@@ -641,9 +652,12 @@ async def update_provider_instance(tenant_id: str = None, provider_id_or_name: s
     if not isinstance(model_info, list):
         return get_error_argument_result(message="model_info must be an array")
     verify = data.get("verify", True)
+    default_headers = data.get("default_headers")
 
     try:
-        success, msg = await provider_api_service.update_provider_instance(tenant_id, provider_id_or_name, instance_id_or_name, instance_name, api_key, base_url, region, model_info, verify)
+        success, msg = await provider_api_service.update_provider_instance(
+            tenant_id, provider_id_or_name, instance_id_or_name, instance_name, api_key, base_url, region, model_info, verify, default_headers=default_headers
+        )
         if success:
             return get_result(message=msg)
         else:

@@ -889,14 +889,21 @@ class PostgresDatabaseLock:
 
     @with_retry(max_retries=3, retry_delay=1.0)
     def lock(self):
-        cursor = self.db.execute_sql("SELECT pg_try_advisory_lock(%s)", (self.lock_id,))
-        ret = cursor.fetchone()
-        if ret[0] == 0:
-            raise Exception(f"acquire postgres lock {self.lock_name} timeout")
-        elif ret[0] == 1:
+        # Wait for the lock instead of giving up on the first contention:
+        # pg_try_advisory_lock returns immediately, which turns every concurrent
+        # caller into a failure that the caller cannot distinguish from a real
+        # error. A blocking pg_advisory_lock bounded by the session lock_timeout
+        # makes self.timeout the actual wait budget.
+        if self.timeout < 0:
+            self.db.execute_sql("SELECT pg_advisory_lock(%s)", (self.lock_id,))
             return True
-        else:
-            raise Exception(f"failed to acquire lock {self.lock_name}")
+
+        self.db.execute_sql("SELECT set_config('lock_timeout', %s, false)", (str(self.timeout * 1000),))
+        try:
+            self.db.execute_sql("SELECT pg_advisory_lock(%s)", (self.lock_id,))
+        finally:
+            self.db.execute_sql("RESET lock_timeout")
+        return True
 
     @with_retry(max_retries=3, retry_delay=1.0)
     def unlock(self):
@@ -1473,6 +1480,8 @@ class Dialog(DataBaseModel):
 
     similarity_threshold = FloatField(default=0.2)
     vector_similarity_weight = FloatField(default=0.3)
+    dedup_threshold = FloatField(default=0.0, help_text="drop a retrieved chunk whose word-shingle similarity to a better-ranked one reaches this; 0 disables")
+    dedup_before_rerank = BooleanField(null=False, default=False, help_text="suppress near-duplicates before reranking, so the reranker spends its budget on distinct chunks")
 
     top_n = IntegerField(default=6)
     rerank_candidates_count = IntegerField(default=64)
@@ -1861,7 +1870,7 @@ class TenantModelInstance(DataBaseModel):
     provider_id = CharField(max_length=32, null=False, index=False)
     api_key = CharField(max_length=512, null=False, index=False, help_text="API key")
     status = CharField(max_length=32, default="active", index=False)
-    extra = CharField(max_length=512, default="{}", index=False)
+    extra = TextField(default="{}", index=False)
 
     class Meta:
         db_table = "tenant_model_instance"
@@ -1916,6 +1925,16 @@ GAUSSDB_EMPTY_STRING_COMPATIBLE_COLUMNS = (
     ("sync_logs", ("error_msg", "full_exception_trace")),
     ("api_4_conversation", ("user_id",)),
     ("user_canvas", ("tags",)),
+)
+
+# The tenant_model tables carry model resolution, and the tables that predate
+# them point into it through these columns. init_database_tables() only creates
+# missing tables, so migrate_db() is what adds them to an upgraded database.
+TENANT_MODEL_ID_COLUMNS = (
+    ("tenant", ("tenant_llm_id", "tenant_embd_id", "tenant_asr_id", "tenant_img2txt_id", "tenant_rerank_id", "tenant_tts_id", "tenant_ocr_id")),
+    ("knowledgebase", ("tenant_embd_id",)),
+    ("dialog", ("tenant_llm_id", "tenant_rerank_id")),
+    ("memory", ("tenant_embd_id", "tenant_llm_id")),
 )
 
 
@@ -2415,6 +2434,8 @@ def migrate_db():
     alter_db_add_column(migrator, "api_4_conversation", "errors", TextField(null=True, help_text="errors"))
     alter_db_add_column(migrator, "dialog", "meta_data_filter", JSONField(null=True, default={}))
     alter_db_add_column(migrator, "dialog", "rerank_candidates_count", IntegerField(default=64))
+    alter_db_add_column(migrator, "dialog", "dedup_threshold", FloatField(default=0.0))
+    alter_db_add_column(migrator, "dialog", "dedup_before_rerank", BooleanField(null=False, default=False))
     alter_db_column_type(migrator, "canvas_template", "title", JSONField(null=True, default=dict, help_text="Canvas title"))
     alter_db_column_type(migrator, "canvas_template", "description", JSONField(null=True, default=dict, help_text="Canvas description"))
     alter_db_add_column(migrator, "user_canvas", "canvas_category", CharField(max_length=32, null=False, default="agent_canvas", help_text="agent_canvas|dataflow_canvas", index=True))
@@ -2479,6 +2500,12 @@ def migrate_db():
     alter_db_add_column(migrator, "file_commit_item", "content_after_location", CharField(max_length=512, null=True))
     alter_db_add_column(migrator, "file_commit_item", "slug_kwd", CharField(max_length=512, null=True, index=True))
     alter_db_add_column(migrator, "file_commit_item", "page_type_kwd", CharField(max_length=32, null=True, index=True))
+    # ---- tenant_model: model resolution on tables that predate it ----
+    for _tenant_model_table, _tenant_model_columns in TENANT_MODEL_ID_COLUMNS:
+        for _tenant_model_column in _tenant_model_columns:
+            alter_db_add_column(migrator, _tenant_model_table, _tenant_model_column, CharField(max_length=32, null=True, help_text="id in tenant_model", index=True))
+    # tenant_model_instance.extra carries the per-model HTTP headers, which outgrow a 512 character column.
+    alter_db_column_type(migrator, "tenant_model_instance", "extra", TextField(default="{}", index=False))
     alter_db_drop_index(migrator, "tenant_langfuse", "idx_tenant_langfuse_secret_key")
     alter_db_drop_index(migrator, "tenant_langfuse", "idx_tenant_langfuse_public_key")
     alter_db_drop_index(migrator, "tenant_langfuse", "idx_tenant_langfuse_host")

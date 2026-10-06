@@ -30,7 +30,7 @@ from api.db.services.knowledgebase_service import KnowledgebaseService
 from api.db.services.doc_metadata_service import DocMetadataService
 
 from common import settings
-from common.constants import ParserType, StatusEnum, TaskStatus, SVR_CONSUMER_GROUP_NAME, MAXIMUM_TASK_PAGE_NUMBER
+from common.constants import ParserType, StatusEnum, TaskStatus, SVR_CONSUMER_GROUP_NAME, MAXIMUM_TASK_PAGE_NUMBER, FileSource
 from common.doc_store.doc_store_base import OrderByExpr
 from common.misc_utils import get_uuid
 from common.time_utils import current_timestamp, get_format_time
@@ -570,6 +570,132 @@ class DocumentService(CommonService):
             logging.warning(f"Failed to cleanup knowledge graph for document {doc.id}: {e}")
 
         return True
+
+    @classmethod
+    @DB.connection_context()
+    def remove_documents_of_kb(cls, kb_id: str, tenant_id: str) -> int:
+        """Remove every document of one dataset together with its side data.
+
+        Covers what the per-document ``remove_document`` path covers - parsing
+        tasks, chunks, chunk images, thumbnails, metadata, file mappings and
+        the document rows - but with set-based deletes, so the number of round
+        trips is bounded by the number of phases instead of by the number of
+        documents. Deleting a crawl dataset of tens of thousands of documents
+        runs synchronously inside the request handler, and the per-document
+        loop stalls the worker for its whole duration.
+
+        One ``kb_id``-scoped doc-store sweep stands in for the per-document
+        chunk delete, the navigation-tree pruning, the reference-counted
+        wiki/artifact cleanup and the knowledge-graph detach: every row those
+        paths touch carries ``kb_id``, so dropping the dataset's whole scope
+        subsumes them.
+
+        This is the only place a dataset's object storage is torn down. The
+        one dataset-wide teardown is the only phase whose failure stops the
+        removal, because a row left behind can still be found and swept while a
+        whole dataset of stranded objects cannot; every other phase, the
+        per-document fallback included, is logged and passed over.
+
+        Args:
+            kb_id (str): ID of the dataset whose documents are removed.
+            tenant_id (str): ID of the tenant owning the dataset.
+
+        Returns:
+            int: Number of document rows removed.
+
+        Raises:
+            Exception: Whatever the storage backend raises when the dataset-wide teardown could not remove the dataset's objects, before any row that names them is deleted.
+        """
+        # Imported here because the task, file and file2document services import DocumentService back.
+        from api.db.services.file2document_service import File2DocumentService
+        from api.db.services.file_service import FileService
+        from api.db.services.task_service import TaskService, abort_doc_chunking_counter
+
+        index_name = search.index_name(tenant_id)
+
+        # Every delete scoped by document ID below reads this subquery, so the document rows have to go last.
+        doc_id_subq = cls.model.select(cls.model.id).where(cls.model.kb_id == kb_id)
+
+        # Cancel the parsing that is still in flight. Bounded by the number of unfinished tasks, not by the
+        # number of documents.
+        try:
+            aborted_doc_ids: set[str] = set()
+            for task in TaskService.model.select(TaskService.model.id, TaskService.model.doc_id).where(TaskService.model.doc_id.in_(doc_id_subq), TaskService.model.progress < 1):
+                try:
+                    REDIS_CONN.set(f"{task.id}-cancel", "x")
+                except Exception as e:
+                    logging.warning(f"Failed to cancel task {task.id} of dataset {kb_id}: {e}")
+                aborted_doc_ids.add(task.doc_id)
+            for doc_id in aborted_doc_ids:
+                abort_doc_chunking_counter(doc_id)
+        except Exception as e:
+            logging.warning(f"Failed to cancel the tasks of dataset {kb_id}: {e}")
+
+        try:
+            TaskService.filter_delete([Task.doc_id.in_(doc_id_subq)])
+        except Exception as e:
+            logging.warning(f"Failed to delete the tasks of dataset {kb_id}: {e}")
+
+        # Object storage: drop the dataset's logical bucket in one scoped teardown where the backend offers it,
+        # and fall back to the per-document chunk-image and thumbnail deletes where it does not. The capability
+        # is read off the wrapped backend, because the encryption wrapper carries a remove_bucket whatever it
+        # wraps and returns False for a backend that has none - taking that branch would delete nothing and
+        # skip the fallback too.
+        #
+        # A failure the scoped teardown reports propagates and stops the removal, because it covers the whole
+        # dataset at once: it runs ahead of every row that names these objects and every phase below deletes
+        # such a row, so logging it and passing over would leave the dataset's objects behind with nothing
+        # left to find them by. Raising instead leaves the dataset deletable and the caller reports it as
+        # failed. A backend with nothing it can scope returns normally rather than raising - RAGFlowS3 refuses
+        # a shared bucket carrying no prefix_path by logging and returning - so this does not block deletion
+        # for a deployment configured that way.
+        #
+        # The fallback is logged and passed over one document at a time, the way remove_document treats the
+        # same two deletes: one object that cannot be removed strands that one object, and giving up on the
+        # dataset over it would make the dataset undeletable for as long as the object stays unremovable.
+        storage_backend = getattr(settings.STORAGE_IMPL, "storage_impl", settings.STORAGE_IMPL)
+        if hasattr(storage_backend, "remove_bucket"):
+            settings.STORAGE_IMPL.remove_bucket(kb_id)
+        else:
+            index_exists = settings.docStoreConn.index_exist(index_name, kb_id)
+            for doc in cls.model.select(cls.model.id, cls.model.kb_id, cls.model.thumbnail).where(cls.model.kb_id == kb_id):
+                try:
+                    if index_exists:
+                        cls.delete_chunk_images(doc, tenant_id)
+                    if doc.thumbnail and not doc.thumbnail.startswith(IMG_BASE64_PREFIX) and settings.STORAGE_IMPL.obj_exist(kb_id, doc.thumbnail):
+                        settings.STORAGE_IMPL.rm(kb_id, doc.thumbnail)
+                except Exception as e:
+                    logging.warning(f"Failed to remove the stored objects of document {doc.id} of dataset {kb_id}: {e}")
+
+        # Drop every doc-store row of the dataset. Unguarded by index_exists, like the per-document chunk sweep:
+        # a false negative there would leave every chunk of the dataset behind.
+        try:
+            settings.docStoreConn.delete({"kb_id": kb_id}, index_name, kb_id)
+        except Exception as e:
+            logging.error(f"Failed to delete the chunks of dataset {kb_id} from the doc store: {e}")
+
+        try:
+            DocMetadataService.delete_kb_metadata(kb_id, tenant_id)
+        except Exception as e:
+            logging.warning(f"Failed to delete the metadata of dataset {kb_id}: {e}")
+
+        # The dataset's own source files and the file <-> document mappings.
+        try:
+            file_id_subq = File2Document.select(File2Document.file_id).where(File2Document.document_id.in_(doc_id_subq))
+            FileService.filter_delete([File.source_type == FileSource.KNOWLEDGEBASE, File.id.in_(file_id_subq)])
+            File2DocumentService.filter_delete([File2Document.document_id.in_(doc_id_subq)])
+        except Exception as e:
+            logging.warning(f"Failed to delete the file rows of dataset {kb_id}: {e}")
+
+        # The document rows go last, paired with the dataset counters the per-document path decremented one
+        # document at a time.
+        with DB.atomic():
+            deleted = cls.model.delete().where(cls.model.kb_id == kb_id).execute()
+            Knowledgebase.update(token_num=0, chunk_num=0, doc_num=0).where(Knowledgebase.id == kb_id).execute()
+
+        logging.info(f"Removed {deleted} documents of dataset {kb_id}")
+
+        return deleted
 
     @classmethod
     @DB.connection_context()

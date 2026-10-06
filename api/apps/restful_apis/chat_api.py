@@ -369,6 +369,16 @@ async def _normalize_model_pair(req, tenant_id, name_field, id_field, model_type
 
 
 async def _validate_dataset_ids(dataset_ids, tenant_id):
+    """Resolve and authorize the datasets a chat may be attached to.
+
+    A dataset is acceptable when it exists, is accessible to ``tenant_id`` and shares an embedding model with
+    the other datasets in the same request. Whether it already holds parsed chunks is deliberately not part of
+    the contract: a dataset is routinely created and attached to its assistant in one provisioning step, before
+    any document has been uploaded, and the chunk count only becomes non-zero once parsing finishes
+    asynchronously. Rejecting an empty dataset here would make assistant provisioning depend on that race.
+
+    Returns the normalized dataset id list on success, or an error message string on failure.
+    """
     if dataset_ids is None:
         return []
     if not isinstance(dataset_ids, list):
@@ -382,10 +392,7 @@ async def _validate_dataset_ids(dataset_ids, tenant_id):
         matches = await thread_pool_exec(KnowledgebaseService.query, id=dataset_id)
         if not matches:
             return f"You don't own the dataset {dataset_id}"
-        kb = matches[0]
-        if kb.chunk_num == 0:
-            return f"The dataset {dataset_id} doesn't own parsed file"
-        kbs.append(kb)
+        kbs.append(matches[0])
 
     err = validate_dataset_embedding_models(kbs)
     if err:

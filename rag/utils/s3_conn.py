@@ -18,10 +18,44 @@ import logging
 import boto3
 from botocore.exceptions import ClientError
 from botocore.config import Config
-import time
 from io import BytesIO
 from common.decorator import singleton
 from common import settings
+
+# Bounds for every S3 request. Without them a wedged object store holds the
+# calling worker forever, and botocore's standard retry mode absorbs the
+# transient failures so the callers do not have to retry themselves.
+DEFAULT_CONNECT_TIMEOUT = 10
+DEFAULT_READ_TIMEOUT = 60
+DEFAULT_RETRIES_MAX_ATTEMPTS = 5
+# botocore defaults to 10 pooled connections. The task executors and the API
+# workers upload and download concurrently, so at the default urllib3 discards
+# and re-establishes connections under load instead of reusing them.
+DEFAULT_POOL_SIZE = 32
+
+
+def _int_setting(config: dict, key: str, default: int) -> int:
+    """Read an optional positive integer from the ``s3`` configuration block.
+
+    Args:
+        config: The ``s3`` block of service_conf.yaml.
+        key: Name of the setting to read.
+        default: Value to use when the key is absent or unusable.
+
+    Returns:
+        The configured value, or ``default``.
+    """
+    raw = config.get(key)
+    if raw is None or raw == "":
+        return default
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        value = 0
+    if value <= 0:
+        logging.warning(f"Ignoring invalid s3.{key} value {raw!r}, using {default}")
+        return default
+    return value
 
 
 @singleton
@@ -38,6 +72,11 @@ class RAGFlowS3:
         self.addressing_style = self.s3_config.get("addressing_style", None)
         self.bucket = self.s3_config.get("bucket", None)
         self.prefix_path = self.s3_config.get("prefix_path", None)
+        self.connect_timeout = _int_setting(self.s3_config, "connect_timeout", DEFAULT_CONNECT_TIMEOUT)
+        self.read_timeout = _int_setting(self.s3_config, "read_timeout", DEFAULT_READ_TIMEOUT)
+        self.retries_max_attempts = _int_setting(self.s3_config, "retries_max_attempts", DEFAULT_RETRIES_MAX_ATTEMPTS)
+        self.pool_size = _int_setting(self.s3_config, "pool_size", DEFAULT_POOL_SIZE)
+        self._default_bucket_ready = False
         self.__open__()
 
     @staticmethod
@@ -96,8 +135,12 @@ class RAGFlowS3:
             if self.addressing_style:
                 config_kwargs["s3"] = {"addressing_style": self.addressing_style}
 
-            if config_kwargs:
-                s3_params["config"] = Config(**config_kwargs)
+            config_kwargs["connect_timeout"] = self.connect_timeout
+            config_kwargs["read_timeout"] = self.read_timeout
+            config_kwargs["retries"] = {"max_attempts": self.retries_max_attempts, "mode": "standard"}
+            config_kwargs["max_pool_connections"] = self.pool_size
+
+            s3_params["config"] = Config(**config_kwargs)
 
             self.conn = [boto3.client("s3", **s3_params)]
         except Exception:
@@ -135,33 +178,58 @@ class RAGFlowS3:
     def list(self, bucket, dir, recursive=True):
         return []
 
-    @use_prefix_path
-    @use_default_bucket
-    def put(self, bucket, fnm, binary, *args, **kwargs):
-        """Upload bytes, creating a missing bucket in the client's region.
+    def _create_bucket(self, bucket):
+        """Create ``bucket`` in the client's region.
 
         Omit the location constraint for the default AWS region and services
         that use ``auto`` to select their own location.
         """
-        logging.debug(f"bucket name {bucket}; filename :{fnm}:")
-        for _ in range(1):
-            try:
-                if not self.bucket_exists(bucket):
-                    bucket_config = {"Bucket": bucket}
-                    region = self.conn[0].meta.region_name
-                    # AWS requires a location constraint outside us-east-1.
-                    # "auto" lets globally distributed S3 services choose it.
-                    if region and region not in ("us-east-1", "auto"):
-                        bucket_config["CreateBucketConfiguration"] = {"LocationConstraint": region}
-                    self.conn[0].create_bucket(**bucket_config)
-                    logging.info(f"create bucket {bucket} ********")
-                r = self.conn[0].upload_fileobj(BytesIO(binary), bucket, fnm)
+        bucket_config = {"Bucket": bucket}
+        region = self.conn[0].meta.region_name
+        # AWS requires a location constraint outside us-east-1.
+        # "auto" lets globally distributed S3 services choose it.
+        if region and region not in ("us-east-1", "auto"):
+            bucket_config["CreateBucketConfiguration"] = {"LocationConstraint": region}
+        self.conn[0].create_bucket(**bucket_config)
+        logging.info(f"create bucket {bucket} ********")
 
-                return r
-            except Exception:
-                logging.exception(f"Fail put {bucket}/{fnm}")
-                self.__open__()
-                time.sleep(1)
+    def _ensure_default_bucket(self):
+        """Create the configured default bucket, once per process.
+
+        In single-bucket mode every object lands in this one physical bucket,
+        so it is probed on the first upload rather than on every upload. The
+        result is only remembered on success, so an object store that was
+        unreachable at the time is picked up by the next upload instead of
+        failing every upload until the process restarts.
+        """
+        if self._default_bucket_ready:
+            return
+
+        if self._head_bucket_or_none(self.bucket) is None:
+            self._create_bucket(self.bucket)
+        self._default_bucket_ready = True
+
+    @use_prefix_path
+    @use_default_bucket
+    def put(self, bucket, fnm, binary, *args, **kwargs):
+        """Upload bytes, creating the target bucket if it does not exist yet.
+
+        A configured default bucket is created once per process; the
+        per-knowledge-base buckets of multi-bucket mode are probed on each
+        upload, as upstream does. Failures propagate: a caller that treats a
+        failed upload as a stored object reports a successful upload of a
+        document that is not there.
+        """
+        logging.debug(f"bucket name {bucket}; filename :{fnm}:")
+        try:
+            if self.bucket:
+                self._ensure_default_bucket()
+            elif not self.bucket_exists(bucket):
+                self._create_bucket(bucket)
+            return self.conn[0].upload_fileobj(BytesIO(binary), bucket, fnm)
+        except Exception:
+            logging.exception(f"Fail put {bucket}/{fnm}")
+            raise
 
     @use_prefix_path
     @use_default_bucket
@@ -174,16 +242,12 @@ class RAGFlowS3:
     @use_prefix_path
     @use_default_bucket
     def get(self, bucket, fnm, *args, **kwargs):
-        for _ in range(1):
-            try:
-                r = self.conn[0].get_object(Bucket=bucket, Key=fnm)
-                object_data = r["Body"].read()
-                return object_data
-            except Exception:
-                logging.exception(f"fail get {bucket}/{fnm}")
-                self.__open__()
-                time.sleep(1)
-        return None
+        try:
+            r = self.conn[0].get_object(Bucket=bucket, Key=fnm)
+            return r["Body"].read()
+        except Exception:
+            logging.exception(f"fail get {bucket}/{fnm}")
+            return None
 
     @use_prefix_path
     @use_default_bucket
@@ -200,16 +264,11 @@ class RAGFlowS3:
     @use_prefix_path
     @use_default_bucket
     def get_presigned_url(self, bucket, fnm, expires, *args, **kwargs):
-        for _ in range(10):
-            try:
-                r = self.conn[0].generate_presigned_url("get_object", Params={"Bucket": bucket, "Key": fnm}, ExpiresIn=expires)
-
-                return r
-            except Exception:
-                logging.exception(f"fail get url {bucket}/{fnm}")
-                self.__open__()
-                time.sleep(1)
-        return None
+        try:
+            return self.conn[0].generate_presigned_url("get_object", Params={"Bucket": bucket, "Key": fnm}, ExpiresIn=expires)
+        except Exception:
+            logging.exception(f"fail get url {bucket}/{fnm}")
+            return None
 
     def _resolve_path(self, bucket, fnm):
         """Apply default_bucket and prefix_path transformations."""

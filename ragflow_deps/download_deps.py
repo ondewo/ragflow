@@ -164,6 +164,36 @@ def download_model(repository_id):
     snapshot_download(repo_id=repository_id, local_dir=local_directory)
 
 
+# NLTK download name -> the resource path `nltk.data.find` resolves it under.
+# Download order matters: NLTK >=3.8.2 gates `wordnet` behind `omw-1.4`, so both
+# must be provisioned or tokenization-backed paths raise LookupError at runtime.
+NLTK_RESOURCE_PATHS = {
+    "omw-1.4": "corpora/omw-1.4",
+    "wordnet": "corpora/wordnet",
+    "punkt": "tokenizers/punkt",
+    "punkt_tab": "tokenizers/punkt_tab",
+}
+
+
+def verify_nltk_data(download_dir):
+    """Fail the build when an NLTK download produced nothing.
+
+    `nltk.download` reports a failed fetch on stdout and returns, so an
+    incomplete `nltk_data` is baked into `infiniflow/ragflow_deps` unnoticed. At
+    runtime `api/validation.py` re-downloads with `halt_on_error=False` and
+    `quiet=True`, so the gap only surfaces when the first document parse raises
+    LookupError. A resource counts as present either unzipped (a directory) or
+    as the `.zip` NLTK leaves next to it, since `nltk.data.find` reads both."""
+    missing = []
+    for data, resource_path in NLTK_RESOURCE_PATHS.items():
+        base = os.path.join(download_dir, *resource_path.split("/"))
+        if not (os.path.isdir(base) or os.path.isfile(f"{base}.zip")):
+            missing.append(f"{data} (expected {base} or {base}.zip)")
+    if missing:
+        raise SystemExit(f"FATAL: NLTK data under {download_dir} is incomplete; missing: {', '.join(missing)}. Aborting the build.")
+    print(f"  ✓ NLTK resources present under {download_dir}")
+
+
 if __name__ == "__main__":
     # Anchor CWD to this file's directory so all relative outputs
     # (huggingface.co/, nltk_data/, *.deb, *.jar, *.tar.gz, etc.) land
@@ -265,11 +295,11 @@ if __name__ == "__main__":
         print(f"  Skipping onnxruntime static check: no .a found under {ort_static_dir}")
 
     local_dir = os.path.abspath("nltk_data")
-    # NLTK >=3.8.2 gates `wordnet` behind `omw-1.4`; both must be provisioned
-    # or tokenization-backed paths raise LookupError at runtime.
-    for data in ["omw-1.4", "wordnet", "punkt", "punkt_tab"]:
+    for data in NLTK_RESOURCE_PATHS:
         print(f"Downloading nltk {data}...")
         nltk.download(data, download_dir=local_dir)
+
+    verify_nltk_data(local_dir)
 
     for repo_id in repos:
         print(f"Downloading huggingface repo {repo_id}...")

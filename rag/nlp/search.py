@@ -47,6 +47,10 @@ def index_name(uid):
     return f"ragflow_{uid}"
 
 
+DEDUP_SHINGLE_SIZE = 5
+DEDUP_WORD_RE = re.compile(r"\w+", re.UNICODE)
+
+
 class Dealer:
     # Short-lived cache of "doc_id exists in MySQL" used by _prune_deleted_chunks.
     # Every retrieval would otherwise hit MySQL per query (fan-out searches and the
@@ -157,6 +161,71 @@ class Dealer:
             query_vector=sres.query_vector,
             field=filtered_field,
             highlight=filtered_highlight,
+            aggregation=sres.aggregation,
+            keywords=sres.keywords,
+            group_docs=sres.group_docs,
+        )
+
+    @staticmethod
+    def _dedup_shingles(text: str, size: int = DEDUP_SHINGLE_SIZE) -> set[str]:
+        """The set of overlapping `size`-word sequences in `text`, used as its near-duplicate signature."""
+        words = DEDUP_WORD_RE.findall(text.lower())
+        if not words:
+            return set()
+        if len(words) <= size:
+            return {" ".join(words)}
+        return {" ".join(words[i : i + size]) for i in range(len(words) - size + 1)}
+
+    @staticmethod
+    def _suppress_near_duplicates(texts: list[str], threshold: float) -> list[int]:
+        """Greedily keep the first of every group of near-duplicates.
+
+        `texts` is in ranking order, so the survivor of a group is always its best-ranked member.
+        Returns the positions to keep, in the same order. A threshold of 0 or less disables suppression.
+        """
+        if threshold <= 0:
+            return list(range(len(texts)))
+
+        kept: list[int] = []
+        kept_shingles: list[set[str]] = []
+        for i, text in enumerate(texts):
+            shingles = Dealer._dedup_shingles(text)
+            if not shingles:
+                kept.append(i)
+                kept_shingles.append(shingles)
+                continue
+
+            duplicate = False
+            for other in kept_shingles:
+                if not other:
+                    continue
+                intersection = len(shingles & other)
+                union = len(shingles) + len(other) - intersection
+                if union and intersection / union >= threshold:
+                    duplicate = True
+                    break
+
+            if not duplicate:
+                kept.append(i)
+                kept_shingles.append(shingles)
+
+        return kept
+
+    def _without_near_duplicates(self, sres: SearchResult, threshold: float) -> SearchResult:
+        """A copy of `sres` with near-duplicate chunks removed, keeping the best-ranked of each group."""
+        texts = [sres.field[chunk_id].get("content_with_weight", "") for chunk_id in sres.ids]
+        keep = Dealer._suppress_near_duplicates(texts, threshold)
+        if len(keep) == len(sres.ids):
+            return sres
+
+        ids = [sres.ids[k] for k in keep]
+        logging.debug("Dealer.retrieval dedup@%s before rerank: %s -> %s chunks", threshold, len(sres.ids), len(ids))
+        return self.SearchResult(
+            total=len(ids),
+            ids=ids,
+            query_vector=sres.query_vector,
+            field={chunk_id: sres.field[chunk_id] for chunk_id in ids},
+            highlight=sres.highlight,
             aggregation=sres.aggregation,
             keywords=sres.keywords,
             group_docs=sres.group_docs,
@@ -574,8 +643,11 @@ class Dealer:
             tks = content_ltks + title_tks + important_kwd + question_tks
             ins_tw.append(tks)
 
-        # if no content_ltks, use content_with_weight instead to avoid empty docs that might cause the reranker to fail with 400 error
-        docs = [remove_redundant_spaces(" ".join(tks)) or str(sres.field[i].get("content_with_weight") or "") for i, tks in zip(sres.ids, ins_tw)]
+        # A cross-encoder is trained on natural language, so it scores the chunk's raw text;
+        # the whitespace-joined tokenizer output splits the compounds the model expects whole.
+        # A chunk without raw text falls back to the joined tokens, because an empty document
+        # makes some reranker providers answer 400.
+        docs = [str(sres.field[i].get("content_with_weight") or "") or remove_redundant_spaces(" ".join(tks)) for i, tks in zip(sres.ids, ins_tw)]
 
         tksim = self.qryr.token_similarity(keywords, ins_tw)
         # rerank_mdl.similarity() returns scores normalized to [0, 1] for every
@@ -608,6 +680,8 @@ class Dealer:
         trace_id=None,
         must_not: dict | None = None,
         rerank_candidates_count=64,
+        dedup_threshold: float = 0.0,
+        dedup_before_rerank: bool = False,
         knn_top_k=1024,  # Advanced knn parameter
         knn_num_candidates=2048,  # Advanced knn parameter
     ):
@@ -661,6 +735,11 @@ class Dealer:
         if sres.total == 0:
             ranks["doc_aggs"] = []
             return ranks
+
+        if dedup_threshold > 0 and dedup_before_rerank:
+            # Suppressing here spends the reranker's candidate budget on distinct chunks,
+            # and shrinks the second KNN call the ES/OpenSearch branch makes below.
+            sres = self._without_near_duplicates(sres, dedup_threshold)
 
         term_similarity_weight = 1 - vector_similarity_weight
         logging.debug(
@@ -734,6 +813,14 @@ class Dealer:
         post_threshold = 0.0 if vector_similarity_weight <= 0 else similarity_threshold
 
         valid_idx = [int(i) for i in sorted_idx if sim_np[i] >= post_threshold]
+
+        if dedup_threshold > 0 and not dedup_before_rerank and len(valid_idx) > 1:
+            texts = [sres.field[sres.ids[i]].get("content_with_weight", "") for i in valid_idx]
+            keep = Dealer._suppress_near_duplicates(texts, dedup_threshold)
+            if len(keep) < len(valid_idx):
+                logging.debug("Dealer.retrieval dedup@%s: %s -> %s chunks", dedup_threshold, len(valid_idx), len(keep))
+                valid_idx = [valid_idx[k] for k in keep]
+
         filtered_count = len(valid_idx)
         ranks["total"] = int(filtered_count)
 

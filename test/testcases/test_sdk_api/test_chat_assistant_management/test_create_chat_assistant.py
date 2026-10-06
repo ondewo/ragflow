@@ -188,10 +188,10 @@ class TestChatAssistantCreate:
                 assert getattr(chat_assistant.prompt_config, k) == v
 
 
+@pytest.mark.usefixtures("clear_chat_assistants")
 class TestChatAssistantCreate2:
     @pytest.mark.p3
-    def test_unparsed_document(self, client, add_document):
+    def test_unparsed_document_is_accepted(self, client, add_document):
         dataset, _ = add_document
-        with pytest.raises(Exception) as exception_info:
-            client.create_chat(name="prompt_test", dataset_ids=[dataset.id])
-        assert "doesn't own parsed file" in str(exception_info.value)
+        chat_assistant = client.create_chat(name="prompt_test", dataset_ids=[dataset.id])
+        assert chat_assistant.dataset_ids == [dataset.id]

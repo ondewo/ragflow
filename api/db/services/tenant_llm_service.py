@@ -14,8 +14,12 @@
 #  limitations under the License.
 #
 import os
+import functools
+import inspect
 import json
 import logging
+import re
+from typing import Any
 from peewee import IntegrityError
 from langfuse import Langfuse
 from common import settings
@@ -24,6 +28,257 @@ from api.db.db_models import DB, LLMFactories, TenantLLM
 from api.db.services.common_service import CommonService
 from api.db.services.langfuse_service import TenantLangfuseService
 from api.db.services.user_service import TenantService
+
+
+# RFC 7230 field-name token characters and the printable subset allowed in a
+# field value (plus horizontal tab). Custom model headers come from the tenant
+# API, so a value carrying CR/LF would let a caller inject further request
+# headers or a body into every request made with that model.
+# Applied with `fullmatch`, so the pattern needs no anchors: a `$`-anchored
+# `match` also succeeds just before a trailing newline, and would accept the
+# very character these patterns exist to reject at the end of a name or value.
+# A field-name must have at least one character; a field-value may be empty,
+# which the write path in the provider service also accepts -- rejecting it
+# here would leave a stored config that fails every request made with it.
+_HEADER_NAME_RE = re.compile(r"[!#$%&'*+\-.^_`|~0-9A-Za-z]+")
+_HEADER_VALUE_RE = re.compile(r"[\t\x20-\x7e]*")
+# Headers the HTTP transport computes itself; overriding them desynchronizes the
+# request from what is actually sent.
+_HEADER_FORBIDDEN = frozenset({"host", "content-length"})
+_HEADER_MAX_COUNT = 32
+_HEADER_NAME_MAX_LEN = 128
+_HEADER_VALUE_MAX_LEN = 4096
+
+
+def validate_default_headers(headers: dict[str, str] | None) -> dict[str, str] | None:
+    """
+    Validate custom per-model HTTP headers and return them unchanged.
+
+    Args:
+        headers (dict[str, str] | None): Header name/value pairs as stored in the model instance config, or None.
+
+    Returns:
+        dict[str, str] | None: The very same object that was passed in, once every entry is known to be legal.
+
+    Raises:
+        ValueError: If the mapping, a header name or a header value is not usable as an HTTP header.
+    """
+    if headers is None:
+        return None
+    if not isinstance(headers, dict):
+        raise ValueError("default_headers must be an object")
+    if len(headers) > _HEADER_MAX_COUNT:
+        raise ValueError(f"default_headers must contain at most {_HEADER_MAX_COUNT} entries")
+
+    seen: set[str] = set()
+    for name, value in headers.items():
+        if not isinstance(name, str) or not isinstance(value, str):
+            raise ValueError("default_headers names and values must be strings")
+        if len(name) > _HEADER_NAME_MAX_LEN:
+            raise ValueError(f"default_headers name length must be at most {_HEADER_NAME_MAX_LEN} characters")
+        if len(value) > _HEADER_VALUE_MAX_LEN:
+            raise ValueError(f"default_headers value length must be at most {_HEADER_VALUE_MAX_LEN} characters")
+        if not _HEADER_NAME_RE.fullmatch(name):
+            raise ValueError(f"default_headers name {name!r} is not a legal HTTP field name")
+        if not _HEADER_VALUE_RE.fullmatch(value):
+            raise ValueError(f"default_headers value of {name!r} is not a legal HTTP field value")
+        lowered = name.lower()
+        if lowered in _HEADER_FORBIDDEN:
+            raise ValueError(f"default_headers name {name!r} is managed by the HTTP transport and cannot be overridden")
+        if lowered in seen:
+            raise ValueError(f"default_headers contains {name!r} more than once (header names are case-insensitive)")
+        seen.add(lowered)
+
+    return headers
+
+
+# The header-capability probe identifies classes by their module and qualified name
+# rather than by importing them. A lazy import here is resolved against whatever
+# `sys.modules` currently holds for `rag.llm.chat_model`, so a caller that has
+# replaced that module turns the probe into an ImportError -- and because the
+# probe sits on the model-construction path, that surfaces as a failed model
+# verification rather than as the missing import it is. Matching on names also
+# degrades safely when a provider class is renamed or dropped upstream: the entry
+# simply stops matching, instead of breaking every model construction.
+_CHAT_MODEL_MODULE = "rag.llm.chat_model"
+
+# Classes that call `chat_model.Base.__init__` -- which does consume
+# `default_headers` -- and then overwrite `self.client` with a transport the
+# mapping was never handed to: another SDK entirely (`mistralai`, `replicate`,
+# `qianfan`, `google.genai`/`AnthropicVertex`, `jina`), a second bare `OpenAI(...)`
+# built without the headers (`LocalAIChat`, `LmStudioChat`), or, for `MWSChat`, a
+# `requests`/`aiohttp` path driven by its own `self.headers` dict. Inheriting from a
+# header-aware base is therefore not sufficient to conclude the headers are sent.
+_TRANSPORT_REPLACING_CLIENT_NAMES: frozenset[tuple[str, str]] = frozenset(
+    (_CHAT_MODEL_MODULE, qualname)
+    for qualname in (
+        "BaiduYiyanChat",
+        "GoogleChat",
+        "LmStudioChat",
+        "LocalAIChat",
+        "LocalLLM",
+        "MistralChat",
+        "MWSChat",
+        "ReplicateChat",
+    )
+)
+
+# Constructors that consume `default_headers` out of `**kwargs` instead of naming it.
+_HEADER_AWARE_KWARGS_CONSTRUCTOR_NAMES: frozenset[tuple[str, str]] = frozenset({(_CHAT_MODEL_MODULE, "Base")})
+
+
+def _class_identity(klass: type[Any]) -> tuple[str, str]:
+    """
+    Return the (module, qualified name) pair that identifies `klass` without importing it.
+
+    Args:
+        klass (type[Any]): The class to identify.
+
+    Returns:
+        tuple[str, str]: Its defining module and qualified name.
+    """
+    return (getattr(klass, "__module__", ""), getattr(klass, "__qualname__", getattr(klass, "__name__", "")))
+
+
+def _resolve_class_names(class_names: frozenset[tuple[str, str]]) -> frozenset[type[Any]]:
+    """
+    Resolve (module, qualified name) pairs to classes, skipping any the module no longer defines.
+
+    Args:
+        class_names (frozenset[tuple[str, str]]): The pairs to resolve.
+
+    Returns:
+        frozenset[type[Any]]: The classes that resolved; a name the module does not define is skipped.
+    """
+    import importlib
+
+    resolved: set[type[Any]] = set()
+    for module_name, qualname in class_names:
+        try:
+            module = importlib.import_module(module_name)
+        except ImportError:
+            continue
+        klass = getattr(module, qualname, None)
+        if isinstance(klass, type):
+            resolved.add(klass)
+
+    return frozenset(resolved)
+
+
+@functools.lru_cache(maxsize=1)
+def _header_aware_kwargs_constructors() -> frozenset[type[Any]]:
+    """
+    Return the client constructors that consume ``default_headers`` out of ``**kwargs`` instead of naming it.
+
+    Returns:
+        frozenset[type[Any]]: The classes whose own ``__init__`` pops the key and hands it to its HTTP client.
+    """
+    # `rag.llm.chat_model.Base.__init__` pops `default_headers` and passes it to
+    # the OpenAI and AsyncOpenAI clients it builds, so all of its subclasses send
+    # the headers even though none of them names the keyword. Imported here rather
+    # than at module scope because `rag.llm` is itself only imported lazily, inside
+    # `TenantLLMService.model_instance`.
+    return _resolve_class_names(_HEADER_AWARE_KWARGS_CONSTRUCTOR_NAMES)
+
+
+@functools.lru_cache(maxsize=1)
+def _transport_replacing_clients() -> frozenset[type[Any]]:
+    """
+    Return the client classes that throw away the header-carrying HTTP client their base built for them.
+
+    Returns:
+        frozenset[type[Any]]: The classes whose own ``__init__`` installs a transport that the configured headers never reach.
+    """
+    # Each of these calls `chat_model.Base.__init__` -- which does consume
+    # `default_headers` -- and then overwrites `self.client` with a transport of
+    # its own that the mapping was never handed to: another SDK entirely
+    # (`mistralai`, `replicate`, `qianfan`, `google.genai`, `AnthropicVertex`,
+    # `jina`), a second bare `OpenAI(...)` built without the headers
+    # (`LocalAIChat`, `LmStudioChat`), or, for `MWSChat`, a `requests`/`aiohttp`
+    # path driven by its own `self.headers` dict that it fills before calling up.
+    # Inheriting from a header-aware base is therefore not enough to conclude that
+    # a client sends the headers, and these have to be named: an accepted header
+    # that never reaches the gateway is the failure mode the operator cannot see.
+    return _resolve_class_names(_TRANSPORT_REPLACING_CLIENT_NAMES)
+
+
+def client_sends_default_headers(client_cls: type[Any]) -> bool:
+    """
+    Report whether constructing `client_cls` with a ``default_headers`` keyword puts those headers on the wire.
+
+    The verdict comes from the chain of ``__init__`` implementations that a call to `client_cls` actually runs,
+    walked from the concrete class upwards. A class listed by `_transport_replacing_clients` discards the client
+    that would have carried the headers, so it ends the walk immediately. A constructor that names
+    ``default_headers`` consumes it; one listed by `_header_aware_kwargs_constructors` consumes it out of
+    ``**kwargs``; and a constructor that collects no ``**kwargs`` at all ends the walk, because from there the
+    keyword can no longer travel to a base that would. A constructor whose signature cannot be read ends the walk
+    the same way.
+
+    Collecting ``**kwargs`` is deliberately not read as support. `rag.llm.chat_model.LiteLLMBase` (33 chat
+    factories) and a dozen embedding and rerank classes absorb unknown keywords and never send them, and a
+    header the operator believes is in effect but that never reaches the gateway is worse than one that was
+    skipped out loud.
+
+    Args:
+        client_cls (type[Any]): The client class a factory name resolves to in one of the `rag.llm` registries.
+
+    Returns:
+        bool: True when a configured header mapping would reach this client's HTTP layer.
+    """
+    for klass in client_cls.__mro__:
+        identity = _class_identity(klass)
+        if identity in _TRANSPORT_REPLACING_CLIENT_NAMES:
+            return False
+
+        init = klass.__dict__.get("__init__")
+        if init is None:
+            continue
+        if identity in _HEADER_AWARE_KWARGS_CONSTRUCTOR_NAMES:
+            return True
+
+        try:
+            parameters = inspect.signature(init).parameters
+        except (TypeError, ValueError):
+            # A constructor implemented in C has no inspectable signature, and
+            # guessing is the trap this function exists to avoid, so end the walk.
+            return False
+
+        if "default_headers" in parameters:
+            return True
+        if not any(parameter.kind is inspect.Parameter.VAR_KEYWORD for parameter in parameters.values()):
+            return False
+
+    return False
+
+
+def default_headers_kwarg(client_cls: type[Any], default_headers: dict[str, str] | None, factory_name: str) -> dict[str, dict[str, str]]:
+    """
+    Build the keyword mapping that carries `default_headers` into `client_cls`, warning and dropping it if it cannot.
+
+    Most of the registered provider clients take no ``default_headers`` argument, and several absorb it into
+    ``**kwargs`` without ever sending it. Configuring headers on such a model is an operator mistake, not a
+    reason to fail every request the model serves, so the headers are skipped and the factory is named in the log.
+
+    Args:
+        client_cls (type[Any]): The client class the factory name resolved to.
+        default_headers (dict[str, str] | None): The validated headers configured for this model instance, if any.
+        factory_name (str): The provider factory the model instance is registered under, for the log line.
+
+    Returns:
+        dict[str, dict[str, str]]: ``{"default_headers": ...}`` when the client sends them, otherwise an empty mapping.
+    """
+    if not default_headers:
+        return {}
+    if not client_sends_default_headers(client_cls):
+        logging.warning(
+            "Model instance of factory %r configures %d custom HTTP header(s), but its client %s does not send them. The headers are ignored for this model.",
+            factory_name,
+            len(default_headers),
+            client_cls.__name__,
+        )
+        return {}
+
+    return {"default_headers": default_headers}
 
 
 class LLMFactoriesService(CommonService):
@@ -186,17 +441,27 @@ class TenantLLMService(CommonService):
 
         kwargs.update({"provider": model_config["llm_factory"]})
         api_key = model_config.get("api_key_payload", model_config["api_key"])
+        # Custom HTTP headers are opt-in: when the model instance configures none,
+        # `default_headers_kwarg` returns an empty mapping, so the many provider
+        # classes that take no `default_headers` argument are constructed exactly as
+        # before. An explicit caller kwarg wins, and popping it keeps the chat branch
+        # below -- the one that forwards **kwargs -- from passing the keyword twice.
+        default_headers = validate_default_headers(kwargs.pop("default_headers", None) or model_config.get("default_headers"))
         if model_config["model_type"] == LLMType.EMBEDDING.value:
             if model_config["llm_factory"] not in EmbeddingModel:
                 logging.error("Factory not in embedding model. Supported factories: %s", list(EmbeddingModel.keys()))
                 return None
-            return EmbeddingModel[model_config["llm_factory"]](api_key, model_config["llm_name"], base_url=model_config["api_base"])
+            embedding_cls = EmbeddingModel[model_config["llm_factory"]]
+            headers_kwarg = default_headers_kwarg(client_cls=embedding_cls, default_headers=default_headers, factory_name=model_config["llm_factory"])
+            return embedding_cls(api_key, model_config["llm_name"], base_url=model_config["api_base"], **headers_kwarg)
 
         elif model_config["model_type"] == LLMType.RERANK.value:
             if model_config["llm_factory"] not in RerankModel:
                 logging.error("Factory not in rerank model. Supported factories: %s", list(RerankModel.keys()))
                 return None
-            return RerankModel[model_config["llm_factory"]](api_key, model_config["llm_name"], base_url=model_config["api_base"], max_token=model_config.get("max_tokens"))
+            rerank_cls = RerankModel[model_config["llm_factory"]]
+            headers_kwarg = default_headers_kwarg(client_cls=rerank_cls, default_headers=default_headers, factory_name=model_config["llm_factory"])
+            return rerank_cls(api_key, model_config["llm_name"], base_url=model_config["api_base"], max_token=model_config.get("max_tokens"), **headers_kwarg)
 
         elif model_config["model_type"] == LLMType.VISION.value:
             if model_config["llm_factory"] not in CvModel:
@@ -208,7 +473,9 @@ class TenantLLMService(CommonService):
             if model_config["llm_factory"] not in ChatModel:
                 logging.error("Factory not in chat model. Supported factories: %s", list(ChatModel.keys()))
                 return None
-            return ChatModel[model_config["llm_factory"]](api_key, model_config["llm_name"], base_url=model_config["api_base"], **kwargs)
+            chat_cls = ChatModel[model_config["llm_factory"]]
+            headers_kwarg = default_headers_kwarg(client_cls=chat_cls, default_headers=default_headers, factory_name=model_config["llm_factory"])
+            return chat_cls(api_key, model_config["llm_name"], base_url=model_config["api_base"], **kwargs, **headers_kwarg)
 
         elif model_config["model_type"] == LLMType.ASR.value:
             if model_config["llm_factory"] not in Seq2txtModel:

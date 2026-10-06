@@ -195,7 +195,7 @@ class RAGFlowMinio:
             return False
 
     @use_default_bucket
-    def bucket_exists(self, bucket):
+    def bucket_exists(self, bucket, **kwargs):
         try:
             if not self.conn.bucket_exists(bucket):
                 return False

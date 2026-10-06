@@ -456,6 +456,15 @@ async def retrieval_test(tenant_id, dataset_id=None):
         return get_error_data_result("`rerank_candidates_count` must be greater than 0")
     if rerank_candidates_count < page * size:
         return get_error_data_result(f"`rerank_candidates_count` must be at least `page` multiplied by `page_size` ({page * size})")
+    try:
+        dedup_threshold = float(req.get("dedup_threshold", 0.0))
+    except (TypeError, ValueError):
+        return get_error_data_result("`dedup_threshold` should be a number")
+    if not 0.0 <= dedup_threshold <= 1.0:
+        return get_error_data_result("`dedup_threshold` must be between 0 and 1")
+    dedup_before_rerank = req.get("dedup_before_rerank", False)
+    if not isinstance(dedup_before_rerank, bool):
+        return get_error_data_result("`dedup_before_rerank` should be a boolean")
     include_knowledge_compilation = req.get("include_knowledge_compilation", True)
     if not isinstance(include_knowledge_compilation, bool):
         return get_error_data_result("`include_knowledge_compilation` should be a boolean")
@@ -506,6 +515,8 @@ async def retrieval_test(tenant_id, dataset_id=None):
             trace_id=search_id,
             must_not=None if include_knowledge_compilation else {"exists": "compile_kwd"},
             rerank_candidates_count=rerank_candidates_count,
+            dedup_threshold=dedup_threshold,
+            dedup_before_rerank=dedup_before_rerank,
         )
         if toc_enhance:
             chat_model_config = get_tenant_default_model_by_type(kb.tenant_id, LLMType.CHAT)

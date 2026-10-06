@@ -40,6 +40,23 @@ from api.db.db_models import close_connection
 
 stop_event = threading.Event()
 
+
+def _db_close(exception: BaseException | None) -> None:
+    """
+    Return this request's database connection to the pool.
+
+    Args:
+        exception (BaseException | None): The exception that ended the request, or None if it succeeded.
+    """
+    if exception:
+        logging.error(
+            "Admin request failed: %s",
+            exception,
+            exc_info=(type(exception), exception, exception.__traceback__),
+        )
+    close_connection()
+
+
 if __name__ == "__main__":
     faulthandler.enable()
     init_root_logger("admin_service")
@@ -61,17 +78,7 @@ if __name__ == "__main__":
     show_configs()
     login_manager = LoginManager()
     login_manager.init_app(app)
-
-    @app.teardown_request
-    def _db_close(exception):
-        if settings.DATABASE_TYPE.lower() == "gaussdb":
-            if exception:
-                logging.error(
-                    "Admin request failed: %s",
-                    exception,
-                    exc_info=(type(exception), exception, exception.__traceback__),
-                )
-            close_connection()
+    app.teardown_request(_db_close)
 
     settings.init_settings()
     setup_auth(login_manager)
