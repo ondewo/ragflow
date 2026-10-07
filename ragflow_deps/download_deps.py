@@ -34,6 +34,8 @@ import argparse
 import os
 import shutil
 import sys
+import time
+import urllib.error
 import urllib.request
 
 # NLTK >=3.10 refuses proxied downloads (SSRF guard) unless opted in; the
@@ -158,6 +160,43 @@ repos = [
 ]
 
 
+# A build runner fetches these from hosts that reset and stall under load
+# (archive.ubuntu.com resets mid-handshake), so every attempt is bounded and
+# retried with a growing delay.
+DOWNLOAD_TIMEOUT_SECONDS = 60
+DOWNLOAD_ATTEMPTS = 5
+
+
+def download_file(url, filename):
+    """Fetch `url` to `filename`, bounded, retried, and atomically.
+
+    Written to a `.part` file and renamed only once the transfer is complete and
+    its length matches Content-Length, so `filename` exists only when it holds
+    the whole artifact. The caller skips a file that already exists, and a
+    truncated one would otherwise be baked into the deps image and surface much
+    later as a corrupt dependency."""
+    partial = f"{filename}.part"
+    for attempt in range(1, DOWNLOAD_ATTEMPTS + 1):
+        try:
+            with urllib.request.urlopen(url, timeout=DOWNLOAD_TIMEOUT_SECONDS) as response:
+                declared_length = response.getheader("Content-Length")
+                with open(partial, "wb") as out:
+                    shutil.copyfileobj(response, out)
+            written = os.path.getsize(partial)
+            if declared_length is not None and written != int(declared_length):
+                raise OSError(f"got {written} bytes, server declared {declared_length}")
+            os.replace(partial, filename)
+            return
+        except Exception as error:
+            if os.path.exists(partial):
+                os.remove(partial)
+            if attempt == DOWNLOAD_ATTEMPTS:
+                raise
+            delay = 2**attempt
+            print(f"  attempt {attempt}/{DOWNLOAD_ATTEMPTS} failed ({error}); retrying in {delay}s")
+            time.sleep(delay)
+
+
 def download_model(repository_id):
     local_directory = os.path.abspath(os.path.join("huggingface.co", repository_id))
     os.makedirs(local_directory, exist_ok=True)
@@ -218,7 +257,7 @@ if __name__ == "__main__":
         filename = url[1] if isinstance(url, list) else url.split("/")[-1]
         print(f"Downloading {filename} from {download_url}...")
         if not os.path.exists(filename):
-            urllib.request.urlretrieve(download_url, filename)
+            download_file(download_url, filename)
 
     # Extract native static libraries to ~/ragflow-native-libs for Go build.
     # Ensures build.sh can find them without network access.
