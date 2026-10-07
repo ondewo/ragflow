@@ -259,8 +259,17 @@ COPY docs docs
 RUN --mount=type=cache,id=ragflow_npm,target=/root/.npm,sharing=locked \
     cd web && NODE_OPTIONS="--max-old-space-size=8192" VITE_BUILD_SOURCEMAP=false VITE_MINIFY=esbuild npm run build
 
+# The version string baked into /ragflow/VERSION, which the server reports. `git describe` reads it
+# from the repository in the build context, which requires a .git that resolves inside the container.
+# A build from a submodule checkout has a .git that is a gitdir pointer into the superproject and
+# resolves to nothing here, so such a build passes the string in instead.
+ARG RAGFLOW_VERSION=""
 RUN --mount=type=bind,source=.git,target=/ragflow/.git \
-    version_info=$(git describe --tags --match=v* --first-parent --always) && \
+    set -e; \
+    version_info="${RAGFLOW_VERSION}"; \
+    if [ -z "$version_info" ]; then \
+        version_info=$(git describe --tags --match=v* --first-parent --always); \
+    fi; \
     echo "$version_info" > /ragflow/VERSION
 
 # production stage
