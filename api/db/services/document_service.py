@@ -167,10 +167,11 @@ class DocumentService(CommonService):
                 docs = docs.where(cls.model.id.not_in(doc_ids_with_metadata))
 
         count = docs.count()
+        # id breaks ties, so that the pages of a column with repeated values neither overlap nor skip documents
         if desc:
-            docs = docs.order_by(cls.model.getter_by(orderby).desc())
+            docs = docs.order_by(cls.model.getter_by(orderby).desc(), cls.model.id.desc())
         else:
-            docs = docs.order_by(cls.model.getter_by(orderby).asc())
+            docs = docs.order_by(cls.model.getter_by(orderby).asc(), cls.model.id.asc())
 
         if page_number and items_per_page:
             docs = docs.paginate(page_number, items_per_page)

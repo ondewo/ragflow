@@ -332,7 +332,8 @@ class FileService(CommonService):
                 with DB.atomic():
                     for dup in existing[1:]:
                         File.update(parent_id=keep_id).where(File.parent_id == dup.id).execute()
-                        cls.delete_by_id(dup.id)
+                        # Not delete_by_id: its connection_context would close the connection inside this transaction.
+                        cls.model.delete().where(cls.model.id == dup.id).execute()
             return existing[0].to_dict()
         file = {
             "id": get_uuid(),
@@ -370,7 +371,8 @@ class FileService(CommonService):
                 with DB.atomic():
                     for dup in existing[1:]:
                         cls.model.update(parent_id=keep_id).where(cls.model.parent_id == dup.id).execute()
-                        cls.delete_by_id(dup.id)
+                        # Not delete_by_id: its connection_context would close the connection inside this transaction.
+                        cls.model.delete().where(cls.model.id == dup.id).execute()
             return
         file_id = get_uuid()
         file = {
@@ -409,7 +411,8 @@ class FileService(CommonService):
                 with DB.atomic():
                     for dup in existing[1:]:
                         cls.model.update(parent_id=keep_id).where(cls.model.parent_id == dup.id).execute()
-                        cls.delete_by_id(dup.id)
+                        # Not delete_by_id: its connection_context would close the connection inside this transaction.
+                        cls.model.delete().where(cls.model.id == dup.id).execute()
             return
         folder = cls.new_a_file_from_kb(tenant_id, KNOWLEDGEBASE_FOLDER_NAME, root_id)
 

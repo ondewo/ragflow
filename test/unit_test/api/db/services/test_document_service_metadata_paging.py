@@ -50,6 +50,12 @@ class _FakeField:
     def not_in(self, other):
         return self
 
+    def desc(self):
+        return self
+
+    def asc(self):
+        return self
+
 
 class _FakeQuery:
     def __init__(self, docs):

@@ -722,6 +722,12 @@ class OSConnection(DocStoreConnection):
             if k == "exists":
                 bqry.filter.append(Q("exists", field=v))
                 continue
+            if k == "must_not":
+                if isinstance(v, dict):
+                    for kk, vv in v.items():
+                        if kk == "exists":
+                            bqry.must_not.append(Q("exists", field=vv))
+                    continue
             if isinstance(v, list):
                 bqry.filter.append(Q("terms", **{k: v}))
             elif isinstance(v, str) or isinstance(v, int):
