@@ -21,6 +21,8 @@ generation). A connection kept past the end of a request is a connection lost
 for the lifetime of the worker thread, so the ``teardown_request`` hook has to
 run ``close_connection()`` for every request and every metadata database, not
 only for the one whose driver pools most aggressively.
+
+It also listens where the ``admin`` section of the service configuration says, and on loopback when the section names no host: its plain HTTP listener is only for the nginx in the same container.
 """
 
 import ast
@@ -171,3 +173,16 @@ def test_teardown_registration_is_not_guarded(admin_server: types.ModuleType) ->
     ]
 
     assert registrations == [f"app.teardown_request({admin_server._db_close.__name__})"]
+
+
+def test_listens_on_loopback_without_a_configured_host(admin_server: types.ModuleType, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(admin_server.settings, "get_base_config", lambda key, default=None: {} if key == "admin" else default)
+
+    assert admin_server._bind_address() == ("127.0.0.1", 9381)
+
+
+def test_listens_where_the_admin_section_says(admin_server: types.ModuleType, monkeypatch: pytest.MonkeyPatch) -> None:
+    admin: dict[str, object] = {"host": "0.0.0.0", "http_port": "9391"}
+    monkeypatch.setattr(admin_server.settings, "get_base_config", lambda key, default=None: admin if key == "admin" else default)
+
+    assert admin_server._bind_address() == ("0.0.0.0", 9391)

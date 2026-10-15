@@ -60,6 +60,12 @@ cd ragflow/
 
 ### Launch Third-Party Services
 
+RAGFlow reaches Redis and OpenSearch only over TLS with a client certificate. Create a development CA and the certificates of RAGFlow, Redis and OpenSearch in **docker/certs/** first:
+
+```bash
+sh docker/generate_dev_certs.sh
+```
+
 The following command launches the 'base' services (MinIO, Elasticsearch, Redis, and MySQL) using Docker Compose:
 
 ```bash

@@ -26,9 +26,13 @@ es:
   username: 'elastic'
   password: 'infini_rag_flow'
 os:
-  hosts: 'http://localhost:1201'
+  hosts: 'https://localhost:1201'
   username: 'admin'
   password: 'infini_rag_flow_OS_01'
+  # Required: TLS with a verified server name and a client certificate (docker/generate_dev_certs.sh).
+  ca_certs: 'docker/certs/ragflow/ca.pem'
+  client_cert: 'docker/certs/ragflow/cert.pem'
+  client_key: 'docker/certs/ragflow/key.pem'
   # Optional hybrid (BM25 + KNN) search tuning. The connector self-provisions the
   # normalization search pipeline on start-up (requires OpenSearch >= 2.10).
   # hybrid_search_pipeline: 'ragflow_hybrid_pipeline'
@@ -54,6 +58,10 @@ redis:
   username: ''
   password: 'infini_rag_flow'
   host: 'localhost:6379'
+  # Required: TLS with a verified server name and a client certificate (docker/generate_dev_certs.sh).
+  ca_certs: 'docker/certs/ragflow/ca.pem'
+  client_cert: 'docker/certs/ragflow/cert.pem'
+  client_key: 'docker/certs/ragflow/key.pem'
 nats:
   host: "localhost"
   port: 4222
@@ -95,6 +103,11 @@ gcs:
 #   port: 5432
 #   max_connections: 100
 #   stale_timeout: 30
+#   # The other keys reach libpq unchanged, e.g. TLS with a client certificate:
+#   sslmode: 'verify-full'
+#   sslrootcert: 'docker/certs/ragflow/ca.pem'
+#   sslcert: 'docker/certs/ragflow/cert.pem'
+#   sslkey: 'docker/certs/ragflow/key.pem'
 # When bucket names one physical bucket shared by every knowledge base, set
 # prefix_path as well. It gives each logical bucket its own key prefix, so an
 # object lands at {prefix_path}/{logical_bucket}/{filename}, and that prefix is
@@ -105,6 +118,10 @@ gcs:
 #   access_key: 'access_key'
 #   secret_key: 'secret_key'
 #   region: 'region'
+#   endpoint_url: 'https://endpoint_url'          # https only
+#   ca_certs: 'docker/certs/ragflow/ca.pem'       # required, CA that verifies the endpoint
+#   client_cert: 'docker/certs/ragflow/cert.pem'  # required, presented to the endpoint
+#   client_key: 'docker/certs/ragflow/key.pem'    # required
 #   prefix_path: 'prefix_path'
 #   connect_timeout: 10        # seconds to establish a connection
 #   read_timeout: 60           # seconds to read a response

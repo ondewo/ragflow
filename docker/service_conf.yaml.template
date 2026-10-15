@@ -30,9 +30,13 @@ es:
   username: '${ES_USER:-elastic}'
   password: '${ELASTIC_PASSWORD:-infini_rag_flow}'
 os:
-  hosts: 'http://${OS_HOST:-opensearch01}:9201'
+  hosts: 'https://${OS_HOST:-opensearch01}:9201'
   username: '${OS_USER:-admin}'
   password: '${OPENSEARCH_PASSWORD:-infini_rag_flow_OS_01}'
+  # Required: TLS with a verified server name and a client certificate.
+  ca_certs: '/ragflow/certs/ca.pem'
+  client_cert: '/ragflow/certs/cert.pem'
+  client_key: '/ragflow/certs/key.pem'
   # Optional hybrid (BM25 + KNN) search tuning. The connector self-provisions the
   # normalization search pipeline on start-up (requires OpenSearch >= 2.10).
   # hybrid_search_pipeline: 'ragflow_hybrid_pipeline'
@@ -79,6 +83,10 @@ redis:
   username: '${REDIS_USERNAME:-}'
   password: '${REDIS_PASSWORD:-infini_rag_flow}'
   host: '${REDIS_HOST:-redis}:6379'
+  # Required: TLS with a verified server name and a client certificate.
+  ca_certs: '/ragflow/certs/ca.pem'
+  client_cert: '/ragflow/certs/cert.pem'
+  client_key: '/ragflow/certs/key.pem'
 nats:
   host: ${NATS_HOST:-0.0.0.0}
   port: ${NATS_PORT:-4222}
@@ -114,6 +122,11 @@ user_default_llm:
 #   port: 5432
 #   max_connections: 100
 #   stale_timeout: 30
+#   # The other keys reach libpq unchanged, e.g. TLS with a client certificate:
+#   sslmode: 'verify-full'
+#   sslrootcert: '/ragflow/certs/ca.pem'
+#   sslcert: '/ragflow/certs/cert.pem'
+#   sslkey: '/ragflow/certs/key.pem'
 # GaussDB metadata DB is configured through GAUSSDB_METADATA_* environment
 # variables and is intentionally not rendered into service_conf.yaml.
 # When bucket names one physical bucket shared by every knowledge base, set
@@ -126,7 +139,10 @@ user_default_llm:
 #   access_key: 'access_key'
 #   secret_key: 'secret_key'
 #   region: 'region'
-#   endpoint_url: 'endpoint_url'
+#   endpoint_url: 'https://endpoint_url'  # https only
+#   ca_certs: '/ragflow/certs/ca.pem'      # required, CA that verifies the endpoint
+#   client_cert: '/ragflow/certs/cert.pem' # required, presented to the endpoint
+#   client_key: '/ragflow/certs/key.pem'   # required
 #   bucket: 'bucket'
 #   prefix_path: 'prefix_path'
 #   signature_version: 'v4'

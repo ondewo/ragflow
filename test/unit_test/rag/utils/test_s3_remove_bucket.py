@@ -28,11 +28,14 @@ from botocore.exceptions import ClientError
 import common.settings  # noqa: F401
 from rag.utils import s3_conn
 
+# Readable stand-ins for the certificate files: no test opens a connection, so they are never loaded.
+TLS_FILES = {"ca_certs": __file__, "client_cert": __file__, "client_key": __file__}
+
 
 def _new_storage(monkeypatch, config):
     module = importlib.reload(s3_conn)
     client = Mock()
-    monkeypatch.setattr(module.settings, "S3", config)
+    monkeypatch.setattr(module.settings, "S3", {**TLS_FILES, **config})
     monkeypatch.setattr(module.boto3, "client", Mock(return_value=client))
     return module.RAGFlowS3(), client
 

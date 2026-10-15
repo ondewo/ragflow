@@ -24,6 +24,7 @@ import copy
 from opensearchpy import OpenSearch, NotFoundError
 from opensearchpy import UpdateByQuery, Q, Search, Index
 from opensearchpy import ConnectionTimeout
+from common.config_utils import tls_client_files
 from common.decorator import singleton
 from common.file_utils import get_project_base_directory
 from common.doc_store.doc_store_base import DocStoreConnection, MatchExpr, OrderByExpr, MatchTextExpr, MatchDenseExpr, FusionExpr
@@ -73,12 +74,21 @@ class OSConnection(DocStoreConnection):
     def __init__(self):
         self.info = {}
         logger.info(f"Use OpenSearch {settings.OS['hosts']} as the doc engine.")
+        hosts = settings.OS["hosts"].split(",")
+        plain = [h for h in hosts if not h.strip().lower().startswith("https://")]
+        if plain:
+            raise ValueError(f"os.hosts must use https://, got {', '.join(plain)}")
+        ca_certs, client_cert, client_key = tls_client_files("os", settings.OS)
         for _ in range(ATTEMPT_TIME):
             try:
                 self.os = OpenSearch(
-                    settings.OS["hosts"].split(","),
+                    hosts,
                     http_auth=(settings.OS["username"], settings.OS["password"]) if "username" in settings.OS and "password" in settings.OS else None,
-                    verify_certs=False,
+                    use_ssl=True,
+                    verify_certs=True,
+                    ca_certs=ca_certs,
+                    client_cert=client_cert,
+                    client_key=client_key,
                     timeout=600,
                     pool_maxsize=int(settings.OS.get("pool_size", DEFAULT_POOL_SIZE)),
                 )

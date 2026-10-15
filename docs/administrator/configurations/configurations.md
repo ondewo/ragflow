@@ -187,6 +187,7 @@ s3:
 - `endpoint_url`: `https://t3.storage.dev`, or `https://fly.storage.tigris.dev` on Fly.io.
 - `addressing_style`: Must be `virtual`.
 - `bucket` / `prefix_path`: Optional. Enables single-bucket mode — see [Migrate from multi-bucket to single-bucket mode](../migration/backup_and_migration.md#migrate-from-multi-bucket-to-single-bucket-mode).
+- `ca_certs` / `client_cert` / `client_key`: Required. The `s3` section also needs the TLS paths described under [`redis`](#redis), and `endpoint_url` must start with `https://`.
 
 When using an external storage backend, you can remove the `minio` service from `docker-compose-base.yml`.
 
@@ -198,6 +199,11 @@ For other S3-compatible backends (AWS S3, Alibaba Cloud OSS, Azure Blob, Google 
 - `db`: The Redis database index to use. Defaults to `1`.
 - `username`: Optional Redis ACL username (Redis 6+).
 - `password`: The password for the specified Redis user.
+- `ca_certs`: Required. PEM file of the CA certificates that verify the server's certificate, which must also name the host in `host`.
+- `client_cert`: Required. PEM file of the client certificate RAGFlow presents.
+- `client_key`: Required. PEM file of that certificate's private key.
+
+The connections to Redis, OpenSearch (`os` section, whose `hosts` must use `https://`) and S3 (`s3` section) are always TLS, and each of these sections requires `ca_certs`, `client_cert` and `client_key`. A missing key or an unreadable file stops RAGFlow at start with an error naming the key.
 
 ### `oauth`
 

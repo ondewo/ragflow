@@ -35,6 +35,9 @@ from rag.utils import s3_conn
 
 pytestmark = pytest.mark.p2
 
+# Readable stand-ins for the certificate files: no test opens a connection, so they are never loaded.
+TLS_FILES = {"ca_certs": __file__, "client_cert": __file__, "client_key": __file__}
+
 
 def _new_storage(monkeypatch, config, client=None):
     """Build a fresh S3 singleton over a mock boto3 client.
@@ -50,7 +53,7 @@ def _new_storage(monkeypatch, config, client=None):
     if client is None:
         client = Mock()
         client.meta.region_name = "eu-central-1"
-    monkeypatch.setattr(module.settings, "S3", config)
+    monkeypatch.setattr(module.settings, "S3", {**TLS_FILES, **config})
     monkeypatch.setattr(module.boto3, "client", Mock(return_value=client))
     return module.RAGFlowS3(), client, module
 
@@ -94,6 +97,45 @@ def test_int_setting_warns_about_an_unusable_value(caplog):
         assert s3_conn._int_setting({"read_timeout": "soon"}, "read_timeout", 60) == 60
 
     assert "s3.read_timeout" in caplog.text
+
+
+# ------------------------------------------------------------ transport security
+
+
+def test_open_verifies_the_endpoint_and_presents_the_client_certificate(monkeypatch, tmp_path):
+    files = {key: str(tmp_path / f"{key}.pem") for key in TLS_FILES}
+    for path in files.values():
+        open(path, "w").close()
+
+    _, _, module = _new_storage(monkeypatch, {"endpoint_url": "https://s3.test:8333", **files})
+
+    kwargs = module.boto3.client.call_args.kwargs
+    assert kwargs["verify"] == files["ca_certs"]
+    assert kwargs["config"].client_cert == (files["client_cert"], files["client_key"])
+
+
+def test_open_refuses_a_plain_http_endpoint(monkeypatch):
+    with pytest.raises(ValueError, match=r"s3\.endpoint_url must use https://, got http://s3.test"):
+        _new_storage(monkeypatch, {"endpoint_url": "http://s3.test"})
+
+
+@pytest.mark.parametrize("key", sorted(TLS_FILES))
+def test_open_refuses_a_missing_certificate_setting(monkeypatch, key):
+    module = importlib.reload(importlib.import_module("rag.utils.s3_conn"))
+    config = dict(TLS_FILES)
+    del config[key]
+    monkeypatch.setattr(module.settings, "S3", config)
+    monkeypatch.setattr(module.boto3, "client", Mock())
+
+    with pytest.raises(ValueError, match=rf"s3\.{key} is not set"):
+        module.RAGFlowS3()
+    module.boto3.client.assert_not_called()
+
+
+@pytest.mark.parametrize("key", sorted(TLS_FILES))
+def test_open_refuses_an_unreadable_certificate_file(monkeypatch, tmp_path, key):
+    with pytest.raises(ValueError, match=rf"s3\.{key} in service_conf.yaml names .*absent.pem.*, which cannot be read"):
+        _new_storage(monkeypatch, {key: str(tmp_path / "absent.pem")})
 
 
 # -------------------------------------------------------- timeouts and retries

@@ -20,6 +20,7 @@ import json
 import uuid
 
 import valkey as redis
+from common.config_utils import tls_client_files
 from common.decorator import singleton
 from common import settings
 from valkey.lock import Lock
@@ -123,12 +124,19 @@ class RedisDB:
         cls.lua_token_bucket = client.register_script(cls.LUA_TOKEN_BUCKET_SCRIPT)
 
     def __open__(self):
+        ca_certs, client_cert, client_key = tls_client_files("redis", self.config)
         try:
             conn_params = {
                 "host": self.config["host"].split(":")[0],
                 "port": int(self.config.get("host", ":6379").split(":")[1]),
                 "db": int(self.config.get("db", 1)),
                 "decode_responses": True,
+                "ssl": True,
+                "ssl_ca_certs": ca_certs,
+                "ssl_certfile": client_cert,
+                "ssl_keyfile": client_key,
+                "ssl_cert_reqs": "required",
+                "ssl_check_hostname": True,
             }
             username = self.config.get("username")
             if username:

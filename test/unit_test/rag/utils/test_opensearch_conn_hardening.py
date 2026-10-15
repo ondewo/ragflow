@@ -16,8 +16,9 @@
 """
 Tests for the OSConnection hardening a concurrent OpenSearch deployment needs.
 
-Four behaviours, each with its own class below:
+Five behaviours, each with its own class below:
 
+* the client always speaks TLS, verifies the server against ``os.ca_certs`` and presents ``os.client_cert``/``os.client_key``; a plain ``http://`` host or a missing or unreadable certificate file stops the start;
 * the urllib3 connection pool is sized from ``os.pool_size`` instead of leaving
   urllib3's default of 10, which serialises the task-executor threads and the
   API workers against each other;
@@ -89,6 +90,9 @@ from rag.utils import opensearch_conn  # noqa: E402
 
 LOGGER_NAME = "ragflow.opensearch_conn"
 
+# Readable stand-ins for the certificate files: the client is mocked and never loads them.
+TLS_FILES = {"ca_certs": __file__, "client_cert": __file__, "client_key": __file__}
+
 
 def _resolve_os_connection_class():
     """Return the real OSConnection class.
@@ -121,28 +125,70 @@ def _make_os_connection():
     return conn
 
 
+def _init_with(os_config: dict):
+    """Run the real ``__init__`` against a mocked client; return the constructor mock."""
+    cls = _resolve_os_connection_class()
+    conn = cls.__new__(cls)
+    client = MagicMock()
+    client.info.return_value = {"version": {"number": "2.18.0"}}
+    client.ping.return_value = True
+
+    with (
+        patch.dict(settings.OS, os_config, clear=True),
+        patch.object(opensearch_conn, "OpenSearch", return_value=client) as ctor,
+    ):
+        conn.__init__()
+
+    return ctor
+
+
+class TestTransportSecurity:
+    """The client must refuse anything but verified TLS with a client certificate."""
+
+    def test_client_verifies_the_server_and_presents_its_certificate(self, tmp_path):
+        files = {key: str(tmp_path / f"{key}.pem") for key in TLS_FILES}
+        for path in files.values():
+            open(path, "w").close()
+
+        kwargs = _init_with({"hosts": "https://os1:9200,https://os2:9200", **files}).call_args.kwargs
+
+        assert kwargs["use_ssl"] is True
+        assert kwargs["verify_certs"] is True
+        assert kwargs["ca_certs"] == files["ca_certs"]
+        assert kwargs["client_cert"] == files["client_cert"]
+        assert kwargs["client_key"] == files["client_key"]
+        assert "ssl_assert_hostname" not in kwargs, "urllib3 checks the host name unless told otherwise"
+
+    def test_plain_http_host_is_refused(self):
+        with pytest.raises(ValueError, match=r"os\.hosts must use https://, got http://os2:9200"):
+            _init_with({"hosts": "https://os1:9200,http://os2:9200", **TLS_FILES})
+
+    @pytest.mark.parametrize("key", sorted(TLS_FILES))
+    def test_missing_certificate_setting_is_refused(self, key):
+        config = {"hosts": "https://os1:9200", **TLS_FILES}
+        del config[key]
+
+        with pytest.raises(ValueError, match=rf"os\.{key} is not set"):
+            _init_with(config)
+
+    @pytest.mark.parametrize("key", sorted(TLS_FILES))
+    def test_unreadable_certificate_file_is_refused(self, key, tmp_path):
+        config = {"hosts": "https://os1:9200", **TLS_FILES, key: str(tmp_path / "absent.pem")}
+
+        with pytest.raises(ValueError, match=rf"os\.{key} in service_conf.yaml names .*absent.pem.*, which cannot be read"):
+            _init_with(config)
+
+
 class TestConnectionPoolSize:
     """The client must be built with a pool big enough for concurrent callers."""
 
     @staticmethod
     def _client_kwargs(os_config: dict) -> dict:
         """Run the real ``__init__`` against a mocked client and return its kwargs."""
-        cls = _resolve_os_connection_class()
-        conn = cls.__new__(cls)
-        client = MagicMock()
-        client.info.return_value = {"version": {"number": "2.18.0"}}
-        client.ping.return_value = True
-
-        with (
-            patch.dict(settings.OS, os_config, clear=True),
-            patch.object(opensearch_conn, "OpenSearch", return_value=client) as ctor,
-        ):
-            conn.__init__()
-
-        return ctor.call_args.kwargs
+        return _init_with({"hosts": "https://localhost:1201", **TLS_FILES, **os_config}).call_args.kwargs
 
     def test_defaults_to_the_module_default(self):
-        kwargs = self._client_kwargs({"hosts": "http://localhost:1201"})
+        kwargs = self._client_kwargs({"hosts": "https://localhost:1201"})
         assert kwargs["pool_maxsize"] == opensearch_conn.DEFAULT_POOL_SIZE
 
     def test_default_is_larger_than_the_urllib3_default_of_ten(self):
@@ -150,12 +196,12 @@ class TestConnectionPoolSize:
 
     def test_configured_pool_size_wins(self):
         configured = opensearch_conn.DEFAULT_POOL_SIZE * 2
-        kwargs = self._client_kwargs({"hosts": "http://localhost:1201", "pool_size": configured})
+        kwargs = self._client_kwargs({"pool_size": configured})
         assert kwargs["pool_maxsize"] == configured
 
     def test_quoted_yaml_value_is_coerced_to_int(self):
         """A YAML scalar may arrive as a string; urllib3 needs an int."""
-        kwargs = self._client_kwargs({"hosts": "http://localhost:1201", "pool_size": "48"})
+        kwargs = self._client_kwargs({"pool_size": "48"})
         assert kwargs["pool_maxsize"] == 48
 
 

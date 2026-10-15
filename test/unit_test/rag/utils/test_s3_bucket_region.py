@@ -27,6 +27,9 @@ from rag.utils import s3_conn
 
 pytestmark = pytest.mark.p2
 
+# Readable stand-ins for the certificate files: no test opens a connection, so they are never loaded.
+TLS_FILES = {"ca_certs": __file__, "client_cert": __file__, "client_key": __file__}
+
 
 def make_storage(monkeypatch, tmp_path, config):
     """Create a fresh S3 singleton with isolated AWS configuration per test."""
@@ -39,7 +42,7 @@ def make_storage(monkeypatch, tmp_path, config):
     monkeypatch.setattr(
         module.settings,
         "S3",
-        {"access_key": "test-access", "secret_key": "test-secret", "endpoint_url": "https://s3.test", **config},
+        {"access_key": "test-access", "secret_key": "test-secret", "endpoint_url": "https://s3.test", **TLS_FILES, **config},
     )
     storage = module.RAGFlowS3()
     # A failed base request must not reconnect before we inspect the stub

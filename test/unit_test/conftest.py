@@ -65,3 +65,12 @@ for _name, _find_path in _REQUIRED_NLTK_DATA:
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", UserWarning)
             nltk.download(_name, download_dir=_LOCAL_NLTK_DATA, quiet=True)
+
+# common.settings builds the Redis client at import, and the client refuses to exist without readable TLS files.
+# Unit tests never connect to Redis, so readable PEM files of the repository stand in for the certificates.
+from common import config_utils
+
+_redis_conf = config_utils.CONFIGS.setdefault("redis", {})
+_redis_conf["ca_certs"] = os.path.join(_REPO_ROOT, "conf", "public.pem")
+_redis_conf["client_cert"] = os.path.join(_REPO_ROOT, "conf", "public.pem")
+_redis_conf["client_key"] = os.path.join(_REPO_ROOT, "conf", "private.pem")

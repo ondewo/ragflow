@@ -26,11 +26,14 @@ from unittest.mock import ANY, Mock
 import common.settings  # noqa: F401 (imported for load-order side effect: breaks the s3_conn <-> settings cycle)
 from rag.utils import s3_conn
 
+# Readable stand-ins for the certificate files: no test opens a connection, so they are never loaded.
+TLS_FILES = {"ca_certs": __file__, "client_cert": __file__, "client_key": __file__}
+
 
 def _new_storage(monkeypatch, config):
     module = importlib.reload(s3_conn)
     client = Mock()
-    monkeypatch.setattr(module.settings, "S3", config)
+    monkeypatch.setattr(module.settings, "S3", {**TLS_FILES, **config})
     monkeypatch.setattr(module.boto3, "client", Mock(return_value=client))
     return module.RAGFlowS3(), client, module.boto3.client
 
@@ -41,7 +44,7 @@ def test_s3_accepts_region_config_key(monkeypatch):
     assert storage.region_name == "us-east-1"
     # config carries the request timeouts and retry policy, covered in
     # test_s3_conn_hardening.py.
-    client_factory.assert_called_once_with("s3", region_name="us-east-1", config=ANY)
+    client_factory.assert_called_once_with("s3", region_name="us-east-1", config=ANY, verify=TLS_FILES["ca_certs"])
 
 
 def test_s3_health_uses_head_bucket_without_writing(monkeypatch):
@@ -58,6 +61,21 @@ def test_s3_health_uses_list_buckets_without_default_bucket(monkeypatch):
 
     assert storage.health() is True
     client.list_buckets.assert_called_once_with()
+
+
+def test_s3_health_accepts_a_default_bucket_the_first_upload_creates(monkeypatch):
+    storage, client, _ = _new_storage(monkeypatch, {"bucket": "ragflow"})
+    client.head_bucket.side_effect = s3_conn.ClientError({"Error": {"Code": "404"}}, "HeadBucket")
+
+    assert storage.health() is True
+    client.create_bucket.assert_not_called()
+
+
+def test_s3_health_returns_false_when_the_bucket_is_forbidden(monkeypatch):
+    storage, client, _ = _new_storage(monkeypatch, {"bucket": "ragflow"})
+    client.head_bucket.side_effect = s3_conn.ClientError({"Error": {"Code": "403"}}, "HeadBucket")
+
+    assert storage.health() is False
 
 
 def test_s3_health_returns_false_on_client_error(monkeypatch):

@@ -19,6 +19,7 @@ import boto3
 from botocore.exceptions import ClientError
 from botocore.config import Config
 from io import BytesIO
+from common.config_utils import tls_client_files
 from common.decorator import singleton
 from common import settings
 
@@ -113,6 +114,10 @@ class RAGFlowS3:
         except Exception:
             pass
 
+        if self.endpoint_url and not self.endpoint_url.strip().lower().startswith("https://"):
+            raise ValueError(f"s3.endpoint_url must use https://, got {self.endpoint_url}")
+        ca_certs, client_cert, client_key = tls_client_files("s3", self.s3_config)
+
         try:
             s3_params = {}
             config_kwargs = {}
@@ -139,8 +144,10 @@ class RAGFlowS3:
             config_kwargs["read_timeout"] = self.read_timeout
             config_kwargs["retries"] = {"max_attempts": self.retries_max_attempts, "mode": "standard"}
             config_kwargs["max_pool_connections"] = self.pool_size
+            config_kwargs["client_cert"] = (client_cert, client_key)
 
             s3_params["config"] = Config(**config_kwargs)
+            s3_params["verify"] = ca_certs
 
             self.conn = [boto3.client("s3", **s3_params)]
         except Exception:
@@ -164,7 +171,8 @@ class RAGFlowS3:
     def health(self):
         try:
             if self.bucket:
-                self.conn[0].head_bucket(Bucket=self.bucket)
+                # The first upload creates the default bucket, so a fresh store without it is healthy.
+                self._head_bucket_or_none(self.bucket)
             else:
                 self.conn[0].list_buckets()
             return True
