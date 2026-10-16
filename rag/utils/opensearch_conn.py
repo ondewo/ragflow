@@ -41,6 +41,10 @@ DEFAULT_POOL_SIZE = 32
 # has to be walked page by page with search_after.
 MAX_RESULT_WINDOW = 10000
 SEARCH_AFTER_BATCH_SIZE = 1000
+# The mappings shipped for the indices say 0 replicas, which loses a node's chunks in a cluster.
+# Unless configured, OpenSearch keeps the replicas equal to the data nodes, from 0 (one node, stays green) to 1.
+DEFAULT_AUTO_EXPAND_REPLICAS = "0-1"
+RAGFLOW_INDEX_PATTERN = "ragflow_*"
 
 _PAGERANK_FEA_ADJUST_SCRIPT = """
 double cur = 0.0;
@@ -117,6 +121,7 @@ class OSConnection(DocStoreConnection):
             self.mapping = json.load(f)
         logger.info(f"OpenSearch {settings.OS['hosts']} is healthy.")
         self._init_hybrid_search()
+        self._align_replicas()
 
     # normalization-processor (needed to merge the BM25 and KNN scores) only
     # exists on OpenSearch 2.10+.
@@ -170,6 +175,52 @@ class OSConnection(DocStoreConnection):
                 exc_info=True,
             )
 
+    def _replica_settings(self) -> dict:
+        """Index settings that decide how many replicas RAGFlow's indices have.
+
+        Without configuration OpenSearch adjusts the replicas to the data nodes, from 0 to 1 (auto_expand_replicas).
+        ``OS_NUMBER_OF_REPLICAS`` or ``os.number_of_replicas`` overrides it with a fixed count such as ``2``, or with another auto-expand range such as ``0-2`` or ``0-all``.
+
+        Raises:
+            ValueError: If the configured value is neither a count nor a range.
+        """
+        configured = os.environ.get("OS_NUMBER_OF_REPLICAS") or settings.OS.get("number_of_replicas")
+        value = "" if configured is None else str(configured).strip()
+        if not value:
+            return {"auto_expand_replicas": DEFAULT_AUTO_EXPAND_REPLICAS}
+        if re.fullmatch(r"\d+", value):
+            return {"number_of_replicas": int(value), "auto_expand_replicas": "false"}
+        if re.fullmatch(r"\d+-(\d+|all)", value):
+            return {"auto_expand_replicas": value}
+        raise ValueError(f"OS_NUMBER_OF_REPLICAS / os.number_of_replicas must be a replica count such as 2 or an auto-expand range such as 0-1 or 0-all, got {value!r}")
+
+    def _with_replicas(self, index_settings: dict) -> dict:
+        """Return the ``settings`` of a mapping with its replica settings replaced by the configured ones."""
+        index = {key: value for key, value in index_settings.get("index", {}).items() if key not in ("number_of_replicas", "auto_expand_replicas")}
+        return {**index_settings, "index": {**index, **self._replica_settings()}}
+
+    def _align_replicas(self):
+        """Bring the replica settings of the existing ``ragflow_*`` indices in line with the configuration.
+
+        An index created with 0 replicas keeps them when the image changes, so this runs at every start and changes only the indices that differ.
+        It is best effort: a failure is logged and leaves the index as it is.
+        """
+        wanted = self._replica_settings()
+        try:
+            current = self.os.indices.get_settings(index=RAGFLOW_INDEX_PATTERN)
+        except Exception as e:
+            logger.warning(f"Could not read the replica settings of {RAGFLOW_INDEX_PATTERN}: {e}")
+            return
+        for index_name, body in current.items():
+            have = {"auto_expand_replicas": "false", **body.get("settings", {}).get("index", {})}
+            if all(have.get(key) == str(value) for key, value in wanted.items()):
+                continue
+            try:
+                self.os.indices.put_settings(index=index_name, body={"index": wanted})
+                logger.info(f"OpenSearch index {index_name}: replicas {have.get('number_of_replicas')} (auto_expand_replicas {have['auto_expand_replicas']}) set to {wanted}.")
+            except Exception as e:
+                logger.warning(f"Could not set the replicas of OpenSearch index {index_name} to {wanted}: {e}")
+
     """
     Database operations
     """
@@ -192,7 +243,8 @@ class OSConnection(DocStoreConnection):
         try:
             from opensearchpy.client import IndicesClient
 
-            return IndicesClient(self.os).create(index=indexName, body=self.mapping)
+            body = {**self.mapping, "settings": self._with_replicas(self.mapping["settings"])}
+            return IndicesClient(self.os).create(index=indexName, body=body)
         except Exception:
             logger.exception("OSConnection.createIndex error %s" % (indexName))
 
@@ -231,7 +283,7 @@ class OSConnection(DocStoreConnection):
             from opensearchpy.client import IndicesClient
 
             body = {
-                "settings": doc_meta_mapping["settings"],
+                "settings": self._with_replicas(doc_meta_mapping["settings"]),
                 "mappings": mappings,
             }
             return IndicesClient(self.os).create(index=index_name, body=body)

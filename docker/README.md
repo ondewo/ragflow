@@ -142,6 +142,11 @@ the `ragflow_deps/download_deps.py` snapshot.
 - `EMBEDDING_BATCH_SIZE`
   The number of text chunks processed in a single batch during embedding vectorization. Defaults to `16`.
 
+### OpenSearch replicas
+
+- `OS_NUMBER_OF_REPLICAS`
+  The replicas of RAGFlow's OpenSearch indices (`ragflow_<tenant>` and `ragflow_doc_meta_<tenant>`), set when RAGFlow creates an index and, if they differ, on the existing indices at every start. Unset, OpenSearch keeps the replicas equal to the data nodes, from 0 to 1 (`auto_expand_replicas` `0-1`): a single node has none and stays green, a cluster of two or more data nodes has one and survives the loss of a node. A number such as `2` fixes the replica count, a range such as `0-2` or `0-all` sets another auto-expand range. The `os.number_of_replicas` key of `service_conf.yaml` takes the same values; the variable wins. Any other value stops RAGFlow at start. Only `DOC_ENGINE=opensearch` is affected.
+
 ### OceanBase prerequisites
 
 Before setting `DOC_ENGINE=oceanbase`, make sure the host OS allows the file descriptor and core dump limits OceanBase expects.
@@ -248,6 +253,7 @@ Before setting `DOC_ENGINE=oceanbase`, make sure the host OS allows the file des
   - `hosts`: Comma-separated URLs of the OpenSearch nodes. Each must start with `https://`.
   - `username`, `password`: The OpenSearch user.
   - `ca_certs`, `client_cert`, `client_key`: Required. See [TLS client certificates](#tls-client-certificates).
+  - `number_of_replicas`: Optional. The replicas of RAGFlow's indices; see `OS_NUMBER_OF_REPLICAS` under [OpenSearch replicas](#opensearch-replicas).
 
 - `redis`
   - `host`: The Redis serving IP *and* port inside the Docker container. Defaults to `redis:6379`.

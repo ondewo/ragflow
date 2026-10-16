@@ -45,6 +45,10 @@ os:
   # client library default of 10 serialises concurrent upload, parse and
   # retrieval traffic over ten sockets.
   # pool_size: 32
+  # Optional replicas of the ragflow_* indices, overridden by the environment variable OS_NUMBER_OF_REPLICAS.
+  # The default '0-1' lets OpenSearch keep the replicas equal to the data nodes, so one node has none and a cluster survives the loss of a node.
+  # A number such as 2 is a fixed replica count, a range such as '0-2' or '0-all' another auto-expand range.
+  # number_of_replicas: '0-1'
 infinity:
   uri: '${INFINITY_HOST:-infinity}:23817'
   postgres_port: 5432

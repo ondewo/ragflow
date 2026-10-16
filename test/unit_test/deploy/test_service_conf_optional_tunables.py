@@ -36,7 +36,7 @@ _PLACEHOLDER_PATTERN = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}
 
 # The defaults the readers of settings.S3 / settings.OS apply when the key is absent.
 S3_TUNABLE_DEFAULTS = {"connect_timeout": 10, "read_timeout": 60, "retries_max_attempts": 5}
-OS_TUNABLE_DEFAULTS = {"pool_size": 32}
+OS_TUNABLE_DEFAULTS = {"pool_size": 32, "number_of_replicas": "0-1"}
 
 
 def _load_yaml(text):

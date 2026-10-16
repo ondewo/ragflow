@@ -16,7 +16,7 @@
 """
 Tests for the OSConnection hardening a concurrent OpenSearch deployment needs.
 
-Five behaviours, each with its own class below:
+Six behaviours, each with its own class below:
 
 * the client always speaks TLS, verifies the server against ``os.ca_certs`` and presents ``os.client_cert``/``os.client_key``; a plain ``http://`` host or a missing or unreadable certificate file stops the start;
 * the urllib3 connection pool is sized from ``os.pool_size`` instead of leaving
@@ -28,7 +28,10 @@ Five behaviours, each with its own class below:
   per-tenant metadata index is created on first write and dropped once empty;
 * a result window reaching past ``index.max_result_window`` is walked with
   ``search_after``, which OpenSearch accepts, rather than ``from`` + ``size``,
-  which it rejects.
+  which it rejects;
+* the indices are created with replicas that follow the data nodes (or the configured count), and the
+  existing ``ragflow_*`` indices are brought in line at start, instead of keeping the mappings' 0 replicas
+  that lose a node's chunks in a cluster.
 
 The OpenSearch client is mocked throughout, so no cluster is needed.
 """
@@ -203,6 +206,167 @@ class TestConnectionPoolSize:
         """A YAML scalar may arrive as a string; urllib3 needs an int."""
         kwargs = self._client_kwargs({"pool_size": "48"})
         assert kwargs["pool_maxsize"] == 48
+
+
+class TestIndexReplicas:
+    """The indices must not be left with the 0 replicas of the shipped mappings."""
+
+    @pytest.fixture(autouse=True)
+    def _no_replica_override(self, monkeypatch):
+        monkeypatch.delenv("OS_NUMBER_OF_REPLICAS", raising=False)
+
+    @staticmethod
+    def _created_body(method: str, *args) -> dict:
+        """Call ``create_idx`` or ``create_doc_meta_idx`` on a connection without the index and return the body it sent."""
+        conn = _make_os_connection()
+        conn.mapping = {
+            "settings": {"index": {"number_of_shards": 2, "number_of_replicas": 0, "knn": True}},
+            "mappings": {"properties": {"lat_lon": {"type": "geo_point"}}},
+        }
+        fake_indices = MagicMock()
+        cls = _resolve_os_connection_class()
+
+        with patch.object(cls, "index_exist", return_value=False), patch("opensearchpy.client.IndicesClient", return_value=fake_indices):
+            getattr(conn, method)(*args)
+
+        fake_indices.create.assert_called_once()
+        assert conn.mapping["settings"]["index"]["number_of_replicas"] == 0, "the loaded mapping is shared and must not be edited"
+        return fake_indices.create.call_args.kwargs["body"]
+
+    @pytest.mark.parametrize(
+        ("method", "args"),
+        [("create_idx", ("ragflow_t1", "kb1", 1024)), ("create_doc_meta_idx", ("ragflow_doc_meta_t1",))],
+    )
+    def test_new_index_follows_the_data_nodes_by_default(self, method, args):
+        index = self._created_body(method, *args)["settings"]["index"]
+
+        assert index["auto_expand_replicas"] == "0-1"
+        assert "number_of_replicas" not in index
+        assert index["number_of_shards"] == 2
+
+    @pytest.mark.parametrize(
+        ("method", "args"),
+        [("create_idx", ("ragflow_t1", "kb1", 1024)), ("create_doc_meta_idx", ("ragflow_doc_meta_t1",))],
+    )
+    def test_new_index_takes_the_replica_count_from_the_environment(self, method, args, monkeypatch):
+        monkeypatch.setenv("OS_NUMBER_OF_REPLICAS", "2")
+
+        index = self._created_body(method, *args)["settings"]["index"]
+
+        assert index["number_of_replicas"] == 2
+        assert index["auto_expand_replicas"] == "false"
+
+    @pytest.mark.parametrize(
+        ("configured", "expected"),
+        [
+            ("2", {"number_of_replicas": 2, "auto_expand_replicas": "false"}),
+            (" 1 ", {"number_of_replicas": 1, "auto_expand_replicas": "false"}),
+            ("0", {"number_of_replicas": 0, "auto_expand_replicas": "false"}),
+            ("0-2", {"auto_expand_replicas": "0-2"}),
+            ("0-all", {"auto_expand_replicas": "0-all"}),
+            ("", {"auto_expand_replicas": "0-1"}),
+        ],
+    )
+    def test_environment_value_is_a_count_or_an_auto_expand_range(self, configured, expected, monkeypatch):
+        monkeypatch.setenv("OS_NUMBER_OF_REPLICAS", configured)
+
+        assert _make_os_connection()._replica_settings() == expected
+
+    def test_service_conf_is_used_without_the_variable_and_the_variable_wins(self, monkeypatch):
+        conn = _make_os_connection()
+
+        with patch.dict(settings.OS, {"number_of_replicas": 0}):
+            assert conn._replica_settings() == {"number_of_replicas": 0, "auto_expand_replicas": "false"}
+            monkeypatch.setenv("OS_NUMBER_OF_REPLICAS", "0-all")
+            assert conn._replica_settings() == {"auto_expand_replicas": "0-all"}
+
+    @pytest.mark.parametrize("configured", ["many", "-1", "1-", "0-x", "1.5", "2 replicas"])
+    def test_unusable_value_is_refused_at_start(self, configured):
+        with pytest.raises(ValueError, match="number_of_replicas must be a replica count"):
+            _init_with({"hosts": "https://localhost:1201", **TLS_FILES, "number_of_replicas": configured})
+
+    @staticmethod
+    def _existing(conn, indices: dict[str, dict]) -> None:
+        """Make the cluster report these ``ragflow_*`` indices with these (string valued) index settings."""
+        conn.os.indices.get_settings.return_value = {name: {"settings": {"index": index}} for name, index in indices.items()}
+
+    def test_start_reads_the_ragflow_indices(self):
+        client = _init_with({"hosts": "https://localhost:1201", **TLS_FILES}).return_value
+
+        client.indices.get_settings.assert_called_once_with(index="ragflow_*")
+
+    def test_existing_index_without_replica_settings_follows_the_data_nodes(self):
+        conn = _make_os_connection()
+        self._existing(
+            conn,
+            {
+                "ragflow_t1": {"number_of_replicas": "0", "number_of_shards": "2"},
+                "ragflow_doc_meta_t1": {"number_of_replicas": "0", "number_of_shards": "2"},
+                "ragflow_t2": {"number_of_replicas": "1", "auto_expand_replicas": "0-1"},
+            },
+        )
+
+        conn._align_replicas()
+
+        assert sorted(call.kwargs["index"] for call in conn.os.indices.put_settings.call_args_list) == ["ragflow_doc_meta_t1", "ragflow_t1"]
+        assert all(call.kwargs["body"] == {"index": {"auto_expand_replicas": "0-1"}} for call in conn.os.indices.put_settings.call_args_list)
+
+    def test_existing_index_is_left_alone_when_it_matches(self, monkeypatch):
+        conn = _make_os_connection()
+        self._existing(conn, {"ragflow_t1": {"auto_expand_replicas": "0-1", "number_of_replicas": "0"}})
+        conn._align_replicas()
+
+        monkeypatch.setenv("OS_NUMBER_OF_REPLICAS", "2")
+        self._existing(conn, {"ragflow_t1": {"number_of_replicas": "2"}})
+        conn._align_replicas()
+
+        conn.os.indices.put_settings.assert_not_called()
+
+    def test_existing_index_is_given_the_configured_count_and_loses_its_auto_expand(self, monkeypatch):
+        monkeypatch.setenv("OS_NUMBER_OF_REPLICAS", "2")
+        conn = _make_os_connection()
+        self._existing(
+            conn,
+            {
+                "ragflow_t1": {"number_of_replicas": "0"},
+                "ragflow_t2": {"number_of_replicas": "1", "auto_expand_replicas": "0-1"},
+                "ragflow_t3": {"number_of_replicas": "2"},
+            },
+        )
+
+        conn._align_replicas()
+
+        puts = {call.kwargs["index"]: call.kwargs["body"] for call in conn.os.indices.put_settings.call_args_list}
+        assert puts == {"ragflow_t1": {"index": {"number_of_replicas": 2, "auto_expand_replicas": "false"}}, "ragflow_t2": {"index": {"number_of_replicas": 2, "auto_expand_replicas": "false"}}}
+
+    def test_no_indices_is_fine(self):
+        conn = _make_os_connection()
+        self._existing(conn, {})
+
+        conn._align_replicas()
+
+        conn.os.indices.put_settings.assert_not_called()
+
+    def test_unreadable_settings_are_logged_and_do_not_stop_the_start(self, caplog):
+        conn = _make_os_connection()
+        conn.os.indices.get_settings.side_effect = opensearchpy.AuthorizationException(403, "security_exception", {})
+
+        with caplog.at_level(logging.WARNING, logger=LOGGER_NAME):
+            conn._align_replicas()
+
+        assert any("Could not read the replica settings" in record.getMessage() for record in caplog.records)
+        conn.os.indices.put_settings.assert_not_called()
+
+    def test_one_index_that_cannot_be_changed_does_not_keep_the_others_from_it(self, caplog):
+        conn = _make_os_connection()
+        self._existing(conn, {"ragflow_t1": {"number_of_replicas": "0"}, "ragflow_t2": {"number_of_replicas": "0"}})
+        conn.os.indices.put_settings.side_effect = [RuntimeError("cluster_block_exception"), {"acknowledged": True}]
+
+        with caplog.at_level(logging.WARNING, logger=LOGGER_NAME):
+            conn._align_replicas()
+
+        assert conn.os.indices.put_settings.call_count == 2
+        assert any("ragflow_t1" in record.getMessage() and "cluster_block_exception" in record.getMessage() for record in caplog.records)
 
 
 class TestInsertErrorReporting:
