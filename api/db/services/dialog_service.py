@@ -37,6 +37,7 @@ from api.db.services.langfuse_service import TenantLangfuseService
 from api.db.services.llm_service import LLMBundle, resolve_llm_setting
 from api.db.services.user_service import TenantService
 from common.metadata_utils import apply_meta_data_filter
+from common.misc_utils import thread_pool_exec_model_call
 from api.utils.reference_metadata_utils import (
     enrich_chunks_with_document_metadata,
     resolve_reference_metadata_preferences,
@@ -875,7 +876,8 @@ async def async_chat(dialog, messages, stream=True, **kwargs):
                 # Main retrieval no longer ships chunk vectors back from ES.
                 # Pull them on demand for the chunks we are about to cite.
                 await _hydrate_chunk_vectors(retriever, kbinfos.get("chunks", []), tenant_ids, dialog.kb_ids)
-                answer, idx = retriever.insert_citations(
+                answer, idx = await thread_pool_exec_model_call(
+                    retriever.insert_citations,
                     answer,
                     [ck["content_ltks"] for ck in kbinfos["chunks"]],
                     [ck["vector"] for ck in kbinfos["chunks"]],
@@ -1815,7 +1817,9 @@ async def async_ask(question, kb_ids, tenant_id, chat_llm_name=None, search_conf
         # Main retrieval no longer ships chunk vectors back from ES. Pull
         # them on demand for the chunks we are about to cite.
         await _hydrate_chunk_vectors(retriever, kbinfos.get("chunks", []), tenant_ids, kb_ids)
-        answer, idx = retriever.insert_citations(answer, [ck["content_ltks"] for ck in kbinfos["chunks"]], [ck["vector"] for ck in kbinfos["chunks"]], embd_mdl, tkweight=0.7, vtweight=0.3)
+        answer, idx = await thread_pool_exec_model_call(
+            retriever.insert_citations, answer, [ck["content_ltks"] for ck in kbinfos["chunks"]], [ck["vector"] for ck in kbinfos["chunks"]], embd_mdl, tkweight=0.7, vtweight=0.3
+        )
         idx = set([kbinfos["chunks"][int(i)]["doc_id"] for i in idx])
         recall_docs = [d for d in kbinfos["doc_aggs"] if d["doc_id"] in idx]
         if not recall_docs:

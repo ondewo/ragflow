@@ -33,6 +33,8 @@ from rag.llm.mws_utils import mws_api_url, require_mws_token
 from rag.utils.url_utils import append_api_path, ensure_v1
 
 MAX_RERANK_TOKEN = 8196
+# Room for the reranker's prompt template and for the query, which tiktoken counts differently from the server's tokenizer.
+RERANK_PROMPT_MARGIN_TOKENS = 256
 RERANK_TOKEN_LIMIT_MODE = os.getenv("RERANK_TOKEN_LIMIT_MODE", "truncate").strip().lower()
 if RERANK_TOKEN_LIMIT_MODE not in {"truncate", "passthrough", "raise_error"}:
     raise ValueError(f"Invalid RERANK_TOKEN_LIMIT_MODE {RERANK_TOKEN_LIMIT_MODE!r}; expected 'truncate', 'passthrough', or 'raise_error'")
@@ -321,6 +323,7 @@ class LmStudioRerank(Base):
 
 class OpenAI_APIRerank(Base):
     _FACTORY_NAME = "OpenAI-API-Compatible"
+    _SEND_MAX_TOKENS_PER_DOC = True
 
     def __init__(self, key, model_name, base_url, max_token=MAX_RERANK_TOKEN, default_headers=None):
         super().__init__(key, model_name, max_token)
@@ -349,6 +352,10 @@ class OpenAI_APIRerank(Base):
             "documents": texts,
             "top_n": len(texts),
         }
+        # The server truncates each document with its own tokenizer, so a document that tiktoken undercounts cannot overflow the reranker's context.
+        doc_budget = self.max_token - num_tokens_from_string(query) - RERANK_PROMPT_MARGIN_TOKENS
+        if self._SEND_MAX_TOKENS_PER_DOC and RERANK_TOKEN_LIMIT_MODE == "truncate" and doc_budget > 0:
+            data["max_tokens_per_doc"] = doc_budget
         token_count = 0
         for t in texts:
             token_count += num_tokens_from_string(t)
@@ -877,6 +884,8 @@ class JiekouAIRerank(JinaRerank):
 
 class FuturMixRerank(OpenAI_APIRerank):
     _FACTORY_NAME = "FuturMix"
+    # FuturMix's rerank API is not known to accept the field.
+    _SEND_MAX_TOKENS_PER_DOC = False
 
     def __init__(self, key, model_name, base_url="https://futurmix.ai/v1/rerank", max_token=MAX_RERANK_TOKEN):
         if not base_url:

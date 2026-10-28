@@ -31,6 +31,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 logger = logging.getLogger(__name__)
 _LONG_TIME_THREAD_POOL_EXECUTOR = ThreadPoolExecutor(max_workers=int(os.getenv("LONG_TIME_THREAD_POOL_WORKERS", "1")), thread_name_prefix="long-time")
+_MODEL_CALL_THREAD_POOL_EXECUTOR = ThreadPoolExecutor(max_workers=int(os.getenv("MODEL_CALL_THREAD_POOL_WORKERS", "16")), thread_name_prefix="model-call")
 
 
 def env_flag(name: str, default: bool) -> bool:
@@ -313,6 +314,30 @@ async def thread_pool_exec_long_time(func, *args, **kwargs):
         inner = functools.partial(func, *args, **kwargs)
         return await loop.run_in_executor(_LONG_TIME_THREAD_POOL_EXECUTOR, ctx.run, inner)
     return await loop.run_in_executor(_LONG_TIME_THREAD_POOL_EXECUTOR, ctx.run, func, *args)
+
+
+async def thread_pool_exec_model_call(func, *args, **kwargs):
+    """Run a blocking model call on the request path in a shared executor.
+
+    A synchronous call to a remote model (rerank, embedding) takes seconds, and
+    on the event loop it stalls every request of the process. Quart cancels a
+    request when its client disconnects; ``thread_pool_exec`` would then wait
+    for the worker in its executor shutdown, still on the loop. This helper
+    submits to a process-level executor, so a cancelled request releases the
+    loop at once while the call finishes in the background.
+
+    The waits are I/O-bound and an abandoned call holds its thread until the
+    model answers, so the pool, bounded by ``MODEL_CALL_THREAD_POOL_WORKERS``
+    (default 16), is sized for concurrency rather than CPU.
+
+    ContextVars are copied into the worker thread, matching ``thread_pool_exec``.
+    """
+    loop = asyncio.get_running_loop()
+    ctx = contextvars.copy_context()
+    if kwargs:
+        inner = functools.partial(func, *args, **kwargs)
+        return await loop.run_in_executor(_MODEL_CALL_THREAD_POOL_EXECUTOR, ctx.run, inner)
+    return await loop.run_in_executor(_MODEL_CALL_THREAD_POOL_EXECUTOR, ctx.run, func, *args)
 
 
 class _CanonKey:

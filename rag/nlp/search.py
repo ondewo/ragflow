@@ -28,7 +28,7 @@ from common import settings
 from common.constants import PAGERANK_FLD, TAG_FLD
 from common.doc_store.doc_store_base import DocStoreConnection, FusionExpr, MatchDenseExpr, OrderByExpr, field_scalar
 from common.float_utils import get_float
-from common.misc_utils import thread_pool_exec
+from common.misc_utils import thread_pool_exec, thread_pool_exec_model_call
 from common.string_utils import remove_redundant_spaces
 from common.tag_feature_utils import parse_tag_features
 from rag.nlp import query, rag_tokenizer
@@ -876,7 +876,8 @@ class Dealer:
         )
 
         if rerank_mdl and sres.total > 0:
-            sim, tsim, vsim = self.rerank_by_model(
+            sim, tsim, vsim = await thread_pool_exec_model_call(
+                self.rerank_by_model,
                 rerank_mdl,
                 sres,
                 question,

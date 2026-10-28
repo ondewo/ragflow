@@ -31,6 +31,7 @@ Related: PR #13835 (async_chat), this PR (async_ask + async_chat).
 
 import asyncio
 import sys
+import threading
 import types
 import warnings
 from copy import deepcopy
@@ -139,6 +140,17 @@ class _StubRetriever:
     def insert_citations(self, answer, content_ltks, vectors, embd_mdl, **_kwargs):
         # Return the answer unchanged; no citation markers inserted.
         return answer, set()
+
+
+class _ThreadRecordingRetriever(_StubRetriever):
+    """A `_StubRetriever` that also records the thread every insert_citations runs on."""
+
+    def __init__(self):
+        self.insert_citations_threads = []
+
+    def insert_citations(self, answer, content_ltks, vectors, embd_mdl, **kwargs):
+        self.insert_citations_threads.append(threading.get_ident())
+        return super().insert_citations(answer, content_ltks, vectors, embd_mdl, **kwargs)
 
 
 class _FakePropagateAttributesContext:
@@ -431,6 +443,41 @@ def test_async_ask_falls_back_to_default_temperature_when_disabled(monkeypatch):
     assert chat_mdl.gen_conf["temperature"] == 0.1
 
 
+@pytest.mark.p2
+def test_async_ask_inserts_citations_off_the_event_loop(monkeypatch):
+    """insert_citations embeds the answer through a blocking model call, so it must not run on the loop thread."""
+    chat_mdl = _StreamingChatModel("RAGFlow is a RAG engine built for document understanding.")
+    retriever = _ThreadRecordingRetriever()
+
+    monkeypatch.setattr(dialog_service.KnowledgebaseService, "get_by_ids", lambda _ids: [_KB])
+    monkeypatch.setattr(
+        dialog_service,
+        "resolve_model_config",
+        lambda _tid, _type, _name: _LLM_CONFIG,
+    )
+    monkeypatch.setattr(dialog_service, "LLMBundle", lambda _tid, _cfg: chat_mdl)
+    monkeypatch.setattr(dialog_service.settings, "retriever", retriever, raising=False)
+    monkeypatch.setattr(dialog_service.settings, "kg_retriever", retriever, raising=False)
+    monkeypatch.setattr(dialog_service.DocMetadataService, "get_flatted_meta_by_kbs", lambda _ids: {})
+    monkeypatch.setattr(dialog_service, "label_question", lambda _q, _kbs: "")
+    monkeypatch.setattr(
+        dialog_service,
+        "kb_prompt",
+        lambda _kbinfos, _max_tokens, **_kw: ["RAGFlow is a RAG engine."],
+    )
+
+    _collect(
+        dialog_service.async_ask(
+            question="What is RAGFlow?",
+            kb_ids=["kb-1"],
+            tenant_id="tenant-1",
+        )
+    )
+
+    assert retriever.insert_citations_threads, "async_ask must insert citations"
+    assert threading.get_ident() not in retriever.insert_citations_threads
+
+
 # ---------------------------------------------------------------------------
 # Tests for async_chat  (production code path)
 # ---------------------------------------------------------------------------
@@ -523,6 +570,48 @@ def test_async_chat_final_event_carries_decorated_answer(monkeypatch):
 
     assert "answer" in final
     assert "reference" in final
+
+
+@pytest.mark.p2
+def test_async_chat_inserts_citations_off_the_event_loop(monkeypatch):
+    """insert_citations embeds the answer through a blocking model call, so it must not run on the loop thread."""
+    # An answer without [ID:n] markers makes decorate_answer insert citations itself.
+    chat_mdl = _StreamingChatModel("RAGFlow handles document parsing with deep understanding.")
+    retriever = _ThreadRecordingRetriever()
+
+    monkeypatch.setattr(dialog_service, "resolve_model_type", lambda _tid, _llm_id: ["chat"])
+    monkeypatch.setattr(
+        dialog_service,
+        "resolve_model_config",
+        lambda _tid, _type, _llm_id: _LLM_CONFIG,
+    )
+    monkeypatch.setattr(
+        dialog_service.TenantLangfuseService,
+        "filter_by_tenant",
+        lambda tenant_id: None,
+    )
+    monkeypatch.setattr(
+        dialog_service,
+        "get_models",
+        lambda _dialog, **_kwargs: ([_KB], chat_mdl, None, chat_mdl, None),
+    )
+    monkeypatch.setattr(dialog_service.KnowledgebaseService, "get_field_map", lambda _kb_ids: {})
+    monkeypatch.setattr(dialog_service.KnowledgebaseService, "get_by_ids", lambda _ids: [_KB])
+    monkeypatch.setattr(dialog_service.settings, "retriever", retriever, raising=False)
+    monkeypatch.setattr(dialog_service, "label_question", lambda _q, _kbs: "")
+    monkeypatch.setattr(
+        dialog_service,
+        "kb_prompt",
+        lambda _kbinfos, _max_tokens, **_kw: ["RAGFlow is a RAG engine."],
+    )
+
+    dialog = _make_dialog(chat_mdl)
+    messages = [{"role": "user", "content": "What is RAGFlow?"}]
+
+    _collect(dialog_service.async_chat(dialog, messages, stream=True, quote=True))
+
+    assert retriever.insert_citations_threads, "async_chat must insert citations"
+    assert threading.get_ident() not in retriever.insert_citations_threads
 
 
 @pytest.mark.p2
