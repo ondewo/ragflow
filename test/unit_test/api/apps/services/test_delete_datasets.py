@@ -50,8 +50,7 @@ def _stub(monkeypatch, name, **attrs):
     return mod
 
 
-def _load_delete_datasets_module(monkeypatch, *, f2d_rows, file_filter_delete, stranded_doc_rows=0):
-    f2d_delete = MagicMock()
+def _load_delete_datasets_module(monkeypatch, *, file_filter_delete, stranded_doc_rows=0):
     calls = []
     cleanup = SimpleNamespace(
         calls=calls,
@@ -61,25 +60,15 @@ def _load_delete_datasets_module(monkeypatch, *, f2d_rows, file_filter_delete, s
         sync_logs_filter_update=MagicMock(side_effect=lambda *_a, **_k: calls.append("cancel_running_syncs")),
     )
     kb = SimpleNamespace(id="kb-1", tenant_id="tenant-1", name="test-kb")
-    doc = SimpleNamespace(id="doc-1")
 
     _stub(
         monkeypatch,
         "api.db.services.document_service",
         DocumentService=SimpleNamespace(
-            query=lambda kb_id: [doc],
-            remove_document=lambda doc, tenant_id: True,
+            remove_documents_of_kb=lambda kb_id, tenant_id: 1,
             filter_delete=cleanup.doc_filter_delete,
         ),
         queue_raptor_o_graphrag_tasks=MagicMock(),
-    )
-    _stub(
-        monkeypatch,
-        "api.db.services.file2document_service",
-        File2DocumentService=SimpleNamespace(
-            get_by_document_id=lambda doc_id: f2d_rows,
-            delete_by_document_id=f2d_delete,
-        ),
     )
     _stub(
         monkeypatch,
@@ -143,6 +132,7 @@ def _load_delete_datasets_module(monkeypatch, *, f2d_rows, file_filter_delete, s
         monkeypatch,
         "common.settings",
         docStoreConn=SimpleNamespace(delete_idx=lambda *_args, **_kwargs: None),
+        STORAGE_IMPL=SimpleNamespace(remove_bucket=lambda _bucket: None),
     )
     _stub(
         monkeypatch,
@@ -195,42 +185,7 @@ def _load_delete_datasets_module(monkeypatch, *, f2d_rows, file_filter_delete, s
     module = importlib.util.module_from_spec(spec)
     monkeypatch.setitem(sys.modules, "test_delete_datasets_module", module)
     spec.loader.exec_module(module)
-    return module, f2d_delete, cleanup
-
-
-@pytest.mark.asyncio
-async def test_delete_datasets_skips_file_delete_when_no_file2document(monkeypatch):
-    """Documents without a File2Document row must not crash dataset deletion."""
-    file_filter_delete = MagicMock(return_value=0)
-    module, f2d_delete, _cleanup = _load_delete_datasets_module(
-        monkeypatch,
-        f2d_rows=[],
-        file_filter_delete=file_filter_delete,
-    )
-
-    ok, result = await module.delete_datasets("tenant-1", ids=["kb-1"])
-
-    assert ok is True
-    assert result == {"success_count": 1}
-    file_filter_delete.assert_called_once()
-    f2d_delete.assert_called_once_with("doc-1")
-
-
-@pytest.mark.asyncio
-async def test_delete_datasets_deletes_linked_file_when_file2document_exists(monkeypatch):
-    f2d_row = SimpleNamespace(file_id="file-1")
-    file_filter_delete = MagicMock(side_effect=[1, 0])
-    module, _f2d_delete, _cleanup = _load_delete_datasets_module(
-        monkeypatch,
-        f2d_rows=[f2d_row],
-        file_filter_delete=file_filter_delete,
-    )
-
-    ok, result = await module.delete_datasets("tenant-1", ids=["kb-1"])
-
-    assert ok is True
-    assert result == {"success_count": 1}
-    assert file_filter_delete.call_count == 2
+    return module, cleanup
 
 
 @pytest.mark.asyncio
@@ -242,9 +197,8 @@ async def test_delete_datasets_unwires_connectors_and_sweeps_stranded_documents(
     and a surviving document row is invisible to the user while still able to
     trip the cross-KB id collision guard.
     """
-    module, _f2d_delete, cleanup = _load_delete_datasets_module(
+    module, cleanup = _load_delete_datasets_module(
         monkeypatch,
-        f2d_rows=[],
         file_filter_delete=MagicMock(return_value=0),
         stranded_doc_rows=2,
     )

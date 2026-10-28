@@ -311,6 +311,9 @@ async def update_document(tenant_id, dataset_id, document_id):
         logging.exception(e)
         return get_error_data_result(message="Database operation failed")
     renamed_doc = map_doc_keys(doc)
+    # The document row carries no meta_fields column; the doc-meta index is the
+    # only store, so report it from there rather than echoing the request.
+    renamed_doc["meta_fields"] = DocMetadataService.get_document_metadata(doc.id)
     return get_result(data=renamed_doc)
 
 
@@ -419,10 +422,12 @@ async def metadata_batch_update(dataset_id, tenant_id):
         if not isinstance(d, dict) or not d.get("key"):
             return get_error_data_result(message="Each delete requires key.")
 
-    target_doc_ids = set()
+    # An absent document_ids means every document of the dataset, so that an
+    # empty selector updates all of them and a metadata_condition alone
+    # narrows that set instead of an empty one.
+    target_doc_ids = set(KnowledgebaseService.list_documents_by_ids([dataset_id]))
     if document_ids:
-        kb_doc_ids = KnowledgebaseService.list_documents_by_ids([dataset_id])
-        invalid_ids = set(document_ids) - set(kb_doc_ids)
+        invalid_ids = set(document_ids) - target_doc_ids
         if invalid_ids:
             return get_error_data_result(message=f"These documents do not belong to dataset {dataset_id}: {', '.join(invalid_ids)}")
         target_doc_ids = set(document_ids)
@@ -753,7 +758,11 @@ def list_docs(dataset_id, tenant_id):
         type: string
         required: false
         default: "create_time"
-        description: Field to order by.
+        description: >
+          Field to order by, named as in the response: id, name, type, suffix, size, dataset_id,
+          chunk_method, pipeline_id, source_type, created_by, chunk_count, token_count, progress,
+          process_begin_at, process_duration, run, status, create_time, create_date, update_time
+          or update_date. Documents with equal values are ordered by id.
       - in: query
         name: desc
         type: boolean
@@ -852,6 +861,34 @@ def list_docs(dataset_id, tenant_id):
     return get_json_result(data={"total": total, "docs": renamed_doc_list})
 
 
+# The fields a document list can be ordered by, named as the response names them, mapped to their
+# Document column. The list is explicit because the column is resolved with Model.getter_by,
+# which follows any attribute path it is given.
+DOC_ORDERBY_COLUMNS = {
+    "id": "id",
+    "name": "name",
+    "type": "type",
+    "suffix": "suffix",
+    "size": "size",
+    "dataset_id": "kb_id",
+    "chunk_method": "parser_id",
+    "pipeline_id": "pipeline_id",
+    "source_type": "source_type",
+    "created_by": "created_by",
+    "chunk_count": "chunk_num",
+    "token_count": "token_num",
+    "progress": "progress",
+    "process_begin_at": "process_begin_at",
+    "process_duration": "process_duration",
+    "run": "run",
+    "status": "status",
+    "create_time": "create_time",
+    "create_date": "create_date",
+    "update_time": "update_time",
+    "update_date": "update_date",
+}
+
+
 def _get_docs_with_request(req, dataset_id: str):
     """Get documents with request parameters from a dataset.
 
@@ -862,7 +899,7 @@ def _get_docs_with_request(req, dataset_id: str):
         req: The request object containing query parameters.
             - page (int): Page number for pagination (default: 1).
             - page_size (int): Number of documents per page (default: 30).
-            - orderby (str): Field to order by (default: "create_time").
+            - orderby (str): Field to order by, one of DOC_ORDERBY_COLUMNS (default: "create_time").
             - desc (bool): Whether to order in descending order (default: True).
             - keywords (str): Keywords to search in document names.
             - suffix (list): File suffix filters.
@@ -894,8 +931,9 @@ def _get_docs_with_request(req, dataset_id: str):
     page_size = validate_rest_api_page_size(q.get("page_size", DEFAULT_PAGE_SIZE))
 
     orderby = q.get("orderby", "create_time")
-    if orderby not in ("create_time", "update_time", "name"):
+    if orderby not in DOC_ORDERBY_COLUMNS:
         return RetCode.ARGUMENT_ERROR, f"invalid orderby field: {orderby}", [], 0
+    orderby = DOC_ORDERBY_COLUMNS[orderby]
     desc = str(q.get("desc", "true")).strip().lower() != "false"
     keywords = q.get("keywords", "")
 
@@ -1434,13 +1472,14 @@ async def update_metadata(tenant_id, dataset_id):
         if not isinstance(d, dict) or not d.get("key"):
             return get_error_data_result(message="Each delete requires key.")
 
-    # Initialize target document IDs
-    target_doc_ids = set()
+    # Target every document of the dataset unless document_ids narrows it, so
+    # that an empty selector updates all of them and a metadata_condition
+    # alone narrows that set instead of an empty one.
+    target_doc_ids = set(KnowledgebaseService.list_documents_by_ids([dataset_id]))
 
     # If document_ids provided, validate they belong to the dataset
     if document_ids:
-        kb_doc_ids = KnowledgebaseService.list_documents_by_ids([dataset_id])
-        invalid_ids = set(document_ids) - set(kb_doc_ids)
+        invalid_ids = set(document_ids) - target_doc_ids
         if invalid_ids:
             return get_error_data_result(message=f"These documents do not belong to dataset {dataset_id}: {', '.join(invalid_ids)}")
         target_doc_ids = set(document_ids)

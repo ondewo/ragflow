@@ -30,6 +30,8 @@ from types import ModuleType, SimpleNamespace
 
 import pytest
 
+from common.constants import ModelTypeBinary, StatusEnum
+
 pytestmark = pytest.mark.p2
 
 PROVIDER = "LM-Studio"
@@ -83,6 +85,8 @@ def _load_service(monkeypatch, existing_instance_names):
         LLMType=SimpleNamespace(),
         ActiveStatusEnum=SimpleNamespace(ACTIVE=SimpleNamespace(value="active")),
         ModelVerifyStatusEnum=SimpleNamespace(UNKNOWN=SimpleNamespace(value="unknown")),
+        ModelTypeBinary=ModelTypeBinary,
+        StatusEnum=StatusEnum,
     )
     _stub(monkeypatch, "common.settings", FACTORY_LLM_INFOS=[{"name": PROVIDER, "llm": [], "url": ""}])
     _stub(monkeypatch, "api.db.db_models", DB=SimpleNamespace())

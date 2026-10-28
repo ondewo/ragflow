@@ -29,6 +29,8 @@ Cargo.lock
 
 # Exclude the log folder
 docker/ragflow-logs/
+# Development certificates from docker/generate_dev_certs.sh
+docker/certs/
 /flask_session
 /logs
 rag/res/deepdoc

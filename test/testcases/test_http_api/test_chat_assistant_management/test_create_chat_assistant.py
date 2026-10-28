@@ -282,11 +282,12 @@ class TestChatAssistantCreate:
         assert "`rerank_id` unknown-rerank-model doesn't exist" in res["message"]
 
 
+@pytest.mark.usefixtures("clear_chat_assistants")
 class TestChatAssistantCreate2:
     @pytest.mark.p2
-    def test_unparsed_document(self, HttpApiAuth, add_document):
+    def test_unparsed_document_is_accepted(self, HttpApiAuth, add_document):
         dataset_id, _ = add_document
         payload = {"name": "prompt_test", "dataset_ids": [dataset_id]}
         res = create_chat_assistant(HttpApiAuth, payload)
-        assert res["code"] == 102
-        assert "doesn't own parsed file" in res["message"]
+        assert res["code"] == 0, res
+        assert res["data"]["dataset_ids"] == [dataset_id], res

@@ -24,6 +24,7 @@ import copy
 from opensearchpy import OpenSearch, NotFoundError
 from opensearchpy import UpdateByQuery, Q, Search, Index
 from opensearchpy import ConnectionTimeout
+from common.config_utils import tls_client_files
 from common.decorator import singleton
 from common.file_utils import get_project_base_directory
 from common.doc_store.doc_store_base import DocStoreConnection, MatchExpr, OrderByExpr, MatchTextExpr, MatchDenseExpr, FusionExpr
@@ -33,6 +34,17 @@ from common import settings
 from common.float_utils import format_minimum_should_match_percent
 
 ATTEMPT_TIME = 2
+# urllib3 defaults to 10 pooled connections, which serialises the task executor
+# threads and the API workers against each other ("Connection pool is full").
+DEFAULT_POOL_SIZE = 32
+# OpenSearch refuses from + size past index.max_result_window; beyond it a query
+# has to be walked page by page with search_after.
+MAX_RESULT_WINDOW = 10000
+SEARCH_AFTER_BATCH_SIZE = 1000
+# The mappings shipped for the indices say 0 replicas, which loses a node's chunks in a cluster.
+# Unless configured, OpenSearch keeps the replicas equal to the data nodes, from 0 (one node, stays green) to 1.
+DEFAULT_AUTO_EXPAND_REPLICAS = "0-1"
+RAGFLOW_INDEX_PATTERN = "ragflow_*"
 
 _PAGERANK_FEA_ADJUST_SCRIPT = """
 double cur = 0.0;
@@ -66,13 +78,23 @@ class OSConnection(DocStoreConnection):
     def __init__(self):
         self.info = {}
         logger.info(f"Use OpenSearch {settings.OS['hosts']} as the doc engine.")
+        hosts = settings.OS["hosts"].split(",")
+        plain = [h for h in hosts if not h.strip().lower().startswith("https://")]
+        if plain:
+            raise ValueError(f"os.hosts must use https://, got {', '.join(plain)}")
+        ca_certs, client_cert, client_key = tls_client_files("os", settings.OS)
         for _ in range(ATTEMPT_TIME):
             try:
                 self.os = OpenSearch(
-                    settings.OS["hosts"].split(","),
+                    hosts,
                     http_auth=(settings.OS["username"], settings.OS["password"]) if "username" in settings.OS and "password" in settings.OS else None,
-                    verify_certs=False,
+                    use_ssl=True,
+                    verify_certs=True,
+                    ca_certs=ca_certs,
+                    client_cert=client_cert,
+                    client_key=client_key,
                     timeout=600,
+                    pool_maxsize=int(settings.OS.get("pool_size", DEFAULT_POOL_SIZE)),
                 )
                 if self.os:
                     self.info = self.os.info()
@@ -99,6 +121,7 @@ class OSConnection(DocStoreConnection):
             self.mapping = json.load(f)
         logger.info(f"OpenSearch {settings.OS['hosts']} is healthy.")
         self._init_hybrid_search()
+        self._align_replicas()
 
     # normalization-processor (needed to merge the BM25 and KNN scores) only
     # exists on OpenSearch 2.10+.
@@ -152,6 +175,52 @@ class OSConnection(DocStoreConnection):
                 exc_info=True,
             )
 
+    def _replica_settings(self) -> dict:
+        """Index settings that decide how many replicas RAGFlow's indices have.
+
+        Without configuration OpenSearch adjusts the replicas to the data nodes, from 0 to 1 (auto_expand_replicas).
+        ``OS_NUMBER_OF_REPLICAS`` or ``os.number_of_replicas`` overrides it with a fixed count such as ``2``, or with another auto-expand range such as ``0-2`` or ``0-all``.
+
+        Raises:
+            ValueError: If the configured value is neither a count nor a range.
+        """
+        configured = os.environ.get("OS_NUMBER_OF_REPLICAS") or settings.OS.get("number_of_replicas")
+        value = "" if configured is None else str(configured).strip()
+        if not value:
+            return {"auto_expand_replicas": DEFAULT_AUTO_EXPAND_REPLICAS}
+        if re.fullmatch(r"\d+", value):
+            return {"number_of_replicas": int(value), "auto_expand_replicas": "false"}
+        if re.fullmatch(r"\d+-(\d+|all)", value):
+            return {"auto_expand_replicas": value}
+        raise ValueError(f"OS_NUMBER_OF_REPLICAS / os.number_of_replicas must be a replica count such as 2 or an auto-expand range such as 0-1 or 0-all, got {value!r}")
+
+    def _with_replicas(self, index_settings: dict) -> dict:
+        """Return the ``settings`` of a mapping with its replica settings replaced by the configured ones."""
+        index = {key: value for key, value in index_settings.get("index", {}).items() if key not in ("number_of_replicas", "auto_expand_replicas")}
+        return {**index_settings, "index": {**index, **self._replica_settings()}}
+
+    def _align_replicas(self):
+        """Bring the replica settings of the existing ``ragflow_*`` indices in line with the configuration.
+
+        An index created with 0 replicas keeps them when the image changes, so this runs at every start and changes only the indices that differ.
+        It is best effort: a failure is logged and leaves the index as it is.
+        """
+        wanted = self._replica_settings()
+        try:
+            current = self.os.indices.get_settings(index=RAGFLOW_INDEX_PATTERN)
+        except Exception as e:
+            logger.warning(f"Could not read the replica settings of {RAGFLOW_INDEX_PATTERN}: {e}")
+            return
+        for index_name, body in current.items():
+            have = {"auto_expand_replicas": "false", **body.get("settings", {}).get("index", {})}
+            if all(have.get(key) == str(value) for key, value in wanted.items()):
+                continue
+            try:
+                self.os.indices.put_settings(index=index_name, body={"index": wanted})
+                logger.info(f"OpenSearch index {index_name}: replicas {have.get('number_of_replicas')} (auto_expand_replicas {have['auto_expand_replicas']}) set to {wanted}.")
+            except Exception as e:
+                logger.warning(f"Could not set the replicas of OpenSearch index {index_name} to {wanted}: {e}")
+
     """
     Database operations
     """
@@ -174,7 +243,8 @@ class OSConnection(DocStoreConnection):
         try:
             from opensearchpy.client import IndicesClient
 
-            return IndicesClient(self.os).create(index=indexName, body=self.mapping)
+            body = {**self.mapping, "settings": self._with_replicas(self.mapping["settings"])}
+            return IndicesClient(self.os).create(index=indexName, body=body)
         except Exception:
             logger.exception("OSConnection.createIndex error %s" % (indexName))
 
@@ -213,7 +283,7 @@ class OSConnection(DocStoreConnection):
             from opensearchpy.client import IndicesClient
 
             body = {
-                "settings": doc_meta_mapping["settings"],
+                "settings": self._with_replicas(doc_meta_mapping["settings"]),
                 "mappings": mappings,
             }
             return IndicesClient(self.os).create(index=index_name, body=body)
@@ -312,6 +382,92 @@ class OSConnection(DocStoreConnection):
     CRUD operations
     """
 
+    def _search_with_search_after(self, index_names: list[str], query: dict, offset: int, limit: int) -> dict:
+        """
+        Page through a sorted query with search_after instead of from + size.
+
+        OpenSearch rejects from + size past index.max_result_window, so reading a window
+        beyond it means keying every page on the sort values of the previous page's last
+        hit. The caller puts the sort clause on the query; a page whose hits carry no sort
+        values cannot be continued from, and is raised rather than silently truncating the
+        window.
+
+        Args:
+            index_names (list[str]): Indices to search.
+            query (dict): Query body. Its from / size are replaced per page.
+            offset (int): Number of leading hits to skip. The pages walked past to reach it are fetched without their _source.
+            limit (int): Number of hits to collect once the skipped ones are passed.
+
+        Returns:
+            dict: The first page's response, with hits.hits replaced by the collected window.
+
+        Raises:
+            Exception: If a page with hits carries no sort values to continue from.
+        """
+        q_base: dict = copy.deepcopy(query)
+        q_base.pop("from", None)
+        q_base.pop("size", None)
+
+        template_res: dict | None = None
+        collected_hits: list[dict] = []
+        search_after: list | None = None
+        remaining_skip: int = max(0, offset)
+        remaining_take: int = max(0, limit)
+
+        while remaining_take > 0:
+            skipping: bool = remaining_skip > 0
+            batch: int = min(SEARCH_AFTER_BATCH_SIZE, remaining_skip if skipping else remaining_take)
+            q_page: dict = copy.deepcopy(q_base)
+            q_page["size"] = batch
+            if search_after is not None:
+                q_page["search_after"] = search_after
+                # The total and the aggregations come from the first page, which is kept
+                # as the response template, so later pages need not recompute them.
+                q_page.pop("aggs", None)
+
+            res = self.os.search(
+                index=index_names,
+                body=q_page,
+                timeout=600,
+                track_total_hits=template_res is None,
+                # A page walked past only to reach the offset is discarded, so the cluster
+                # need not read and ship its documents; the sort values it is continued
+                # from come back either way.
+                _source=not skipping,
+            )
+            if str(res.get("timed_out", "")).lower() == "true":
+                raise Exception("OpenSearch Timeout.")
+            if template_res is None:
+                template_res = res
+
+            hits: list[dict] = res.get("hits", {}).get("hits", [])
+            if not hits:
+                break
+
+            if skipping:
+                remaining_skip -= len(hits)
+            else:
+                collected_hits.extend(hits)
+                remaining_take -= len(hits)
+
+            search_after = hits[-1].get("sort")
+            if not search_after:
+                msg = (
+                    f"OSConnection._search_with_search_after cannot page {index_names!s}: the last hit of a page "
+                    f"carries no sort values, so the next page has nothing to start from. The query needs a sort "
+                    f"clause on a sortable field."
+                )
+                logger.error(msg)
+                raise Exception(msg)
+
+            if len(hits) < batch:
+                break
+
+        if template_res is None:
+            return {"hits": {"total": {"value": 0, "relation": "eq"}, "hits": []}}
+        template_res["hits"]["hits"] = collected_hits
+        return template_res
+
     def search(
         self,
         select_fields: list[str],
@@ -325,9 +481,14 @@ class OSConnection(DocStoreConnection):
         knowledgebase_ids: list[str],
         agg_fields: list[str] = [],
         rank_feature: dict | None = None,
+        deep_pagination: bool = False,
     ):
         """
         Refers to https://github.com/opensearch-project/opensearch-py/blob/main/guides/dsl.md
+
+        Pass deep_pagination to walk the result window with search_after instead of
+        from + size. It is turned on automatically once offset + limit reaches past
+        index.max_result_window, which OpenSearch would otherwise reject.
         """
         use_knn = False
         use_text = False
@@ -425,8 +586,8 @@ class OSConnection(DocStoreConnection):
         for field in highlight_fields:
             s = s.highlight(field, force_source=True, no_match_size=30, require_field_match=False)
 
+        orders: list[dict] = []
         if order_by:
-            orders = list()
             for field, order in order_by.fields:
                 order = "asc" if order == 0 else "desc"
                 if field in ["page_num_int", "top_int"]:
@@ -441,7 +602,18 @@ class OSConnection(DocStoreConnection):
         for fld in agg_fields:
             s.aggs.bucket(f"aggs_{fld}", "terms", field=fld, size=1000000)
 
-        if limit > 0:
+        # search_after needs a sort value on every hit, so it rules out a knn leg (knn
+        # hits are score-ordered and carry none) and an order_by that produced no clause.
+        deep_window: bool = limit > 0 and offset + limit > MAX_RESULT_WINDOW
+        use_search_after: bool = (deep_pagination or deep_window) and limit > 0 and bool(orders) and not use_knn
+        if deep_window and not use_search_after:
+            logger.warning(
+                f"OSConnection.search {index_names!s} asks for offset={offset} limit={limit}, past "
+                f"index.max_result_window ({MAX_RESULT_WINDOW}), but search_after paging needs a sort clause "
+                f"(built {len(orders)}) and no knn leg (knn: {use_knn}); the query stays on from + size."
+            )
+
+        if limit > 0 and not use_search_after:
             s = s[offset : offset + limit]
         q = s.to_dict()
         logger.debug(f"OSConnection.search {str(index_names)} query: " + json.dumps(q))
@@ -465,19 +637,27 @@ class OSConnection(DocStoreConnection):
 
         for i in range(ATTEMPT_TIME):
             try:
-                res = self.os.search(
-                    index=index_names,
-                    body=q,
-                    timeout=600,
-                    # search_type="dfs_query_then_fetch",
-                    track_total_hits=True,
-                    _source=True,
-                    **search_kwargs,
-                )
+                if use_search_after:
+                    res = self._search_with_search_after(index_names, q, offset, limit)
+                else:
+                    res = self.os.search(
+                        index=index_names,
+                        body=q,
+                        timeout=600,
+                        # search_type="dfs_query_then_fetch",
+                        track_total_hits=True,
+                        _source=True,
+                        **search_kwargs,
+                    )
                 if str(res.get("timed_out", "")).lower() == "true":
                     raise Exception("OpenSearch Timeout.")
                 logger.debug(f"OSConnection.search {str(index_names)} res: " + str(res))
                 return res
+            except NotFoundError as e:
+                # A per-tenant metadata index is created on first write and dropped again
+                # once it runs empty, so searching one that is not there is routine.
+                logger.debug(f"OSConnection.search {str(index_names)} on a missing index: " + str(e))
+                raise
             except Exception as e:
                 logger.exception(f"OSConnection.search {str(index_names)} query: " + str(q))
                 if str(e).find("Timeout") > 0:
@@ -523,28 +703,34 @@ class OSConnection(DocStoreConnection):
             operations.append({"index": {"_index": indexName, "_id": meta_id}})
             operations.append(d_copy)
 
-        res = []
+        last_error: str = ""
         for _ in range(ATTEMPT_TIME):
             try:
-                res = []
                 r = self.os.bulk(index=(indexName), body=operations, refresh=refresh, timeout=60)
-                if re.search(r"False", str(r["errors"]), re.IGNORECASE):
-                    return res
-
-                for item in r["items"]:
-                    for action in ["create", "delete", "index", "update"]:
-                        if action in item and "error" in item[action]:
-                            res.append(str(item[action]["_id"]) + ":" + str(item[action]["error"]))
-                return res
             except Exception as e:
-                res.append(str(e))
-                logger.warning("OSConnection.insert got exception: " + str(e))
-                res = []
-                if re.search(r"(Timeout|time out)", str(e), re.IGNORECASE):
-                    res.append(str(e))
+                last_error = str(e)
+                logger.warning("OSConnection.insert got exception: " + last_error)
+                if re.search(r"(Timeout|time out)", last_error, re.IGNORECASE):
                     time.sleep(3)
                     continue
-        return res
+                # Anything other than a timeout (a rejected batch, a mapping conflict, a
+                # circuit breaker) will not get better on a retry.
+                return [last_error]
+
+            # The batch-level "errors" flag only says whether to look; "items" is the
+            # record of what happened, so walk it whatever the flag says.
+            errors: list[str] = []
+            for item in r.get("items", []):
+                for action in ("create", "delete", "index", "update"):
+                    if action in item and "error" in item[action]:
+                        errors.append(str(item[action].get("_id")) + ":" + str(item[action]["error"]))
+            if errors:
+                logger.warning(f"OSConnection.insert into {indexName}: {len(errors)} of {len(documents)} documents rejected, first: {errors[0]}")
+            return errors
+
+        # Every attempt timed out, so nothing was confirmed written. Returning an empty
+        # list here would tell the caller the whole batch landed.
+        return [last_error or f"OSConnection.insert into {indexName} timed out {ATTEMPT_TIME} times"]
 
     def update(self, condition: dict, newValue: dict, indexName: str, knowledgebaseId: str) -> bool:
         doc = copy.deepcopy(newValue)
@@ -598,6 +784,12 @@ class OSConnection(DocStoreConnection):
             if k == "exists":
                 bqry.filter.append(Q("exists", field=v))
                 continue
+            if k == "must_not":
+                if isinstance(v, dict):
+                    for kk, vv in v.items():
+                        if kk == "exists":
+                            bqry.must_not.append(Q("exists", field=vv))
+                    continue
             if isinstance(v, list):
                 bqry.filter.append(Q("terms", **{k: v}))
             elif isinstance(v, str) or isinstance(v, int):

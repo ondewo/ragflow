@@ -35,6 +35,8 @@ import hashlib
 import os
 import shutil
 import sys
+import time
+import urllib.error
 import urllib.request
 
 # NLTK >=3.10 refuses proxied downloads (SSRF guard) unless opted in; the
@@ -197,10 +199,77 @@ repos = [
 ]
 
 
+# A build runner fetches these from hosts that reset and stall under load
+# (archive.ubuntu.com resets mid-handshake), so every attempt is bounded and
+# retried with a growing delay.
+DOWNLOAD_TIMEOUT_SECONDS = 60
+DOWNLOAD_ATTEMPTS = 5
+
+
+def download_file(url, filename):
+    """Fetch `url` to `filename`, bounded, retried, and atomically.
+
+    Written to a `.part` file and renamed only once the transfer is complete and
+    its length matches Content-Length, so `filename` exists only when it holds
+    the whole artifact. The caller skips a file that already exists, and a
+    truncated one would otherwise be baked into the deps image and surface much
+    later as a corrupt dependency."""
+    partial = f"{filename}.part"
+    for attempt in range(1, DOWNLOAD_ATTEMPTS + 1):
+        try:
+            with urllib.request.urlopen(url, timeout=DOWNLOAD_TIMEOUT_SECONDS) as response:
+                declared_length = response.getheader("Content-Length")
+                with open(partial, "wb") as out:
+                    shutil.copyfileobj(response, out)
+            written = os.path.getsize(partial)
+            if declared_length is not None and written != int(declared_length):
+                raise OSError(f"got {written} bytes, server declared {declared_length}")
+            os.replace(partial, filename)
+            return
+        except Exception as error:
+            if os.path.exists(partial):
+                os.remove(partial)
+            if attempt == DOWNLOAD_ATTEMPTS:
+                raise
+            delay = 2**attempt
+            print(f"  attempt {attempt}/{DOWNLOAD_ATTEMPTS} failed ({error}); retrying in {delay}s")
+            time.sleep(delay)
+
+
 def download_model(repository_id):
     local_directory = os.path.abspath(os.path.join("huggingface.co", repository_id))
     os.makedirs(local_directory, exist_ok=True)
     snapshot_download(repo_id=repository_id, local_dir=local_directory)
+
+
+# NLTK download name -> the resource path `nltk.data.find` resolves it under.
+# Download order matters: NLTK >=3.8.2 gates `wordnet` behind `omw-1.4`, so both
+# must be provisioned or tokenization-backed paths raise LookupError at runtime.
+NLTK_RESOURCE_PATHS = {
+    "omw-1.4": "corpora/omw-1.4",
+    "wordnet": "corpora/wordnet",
+    "punkt": "tokenizers/punkt",
+    "punkt_tab": "tokenizers/punkt_tab",
+}
+
+
+def verify_nltk_data(download_dir):
+    """Fail the build when an NLTK download produced nothing.
+
+    `nltk.download` reports a failed fetch on stdout and returns, so an
+    incomplete `nltk_data` is baked into `infiniflow/ragflow_deps` unnoticed. At
+    runtime `api/validation.py` re-downloads with `halt_on_error=False` and
+    `quiet=True`, so the gap only surfaces when the first document parse raises
+    LookupError. A resource counts as present either unzipped (a directory) or
+    as the `.zip` NLTK leaves next to it, since `nltk.data.find` reads both."""
+    missing = []
+    for data, resource_path in NLTK_RESOURCE_PATHS.items():
+        base = os.path.join(download_dir, *resource_path.split("/"))
+        if not (os.path.isdir(base) or os.path.isfile(f"{base}.zip")):
+            missing.append(f"{data} (expected {base} or {base}.zip)")
+    if missing:
+        raise SystemExit(f"FATAL: NLTK data under {download_dir} is incomplete; missing: {', '.join(missing)}. Aborting the build.")
+    print(f"  ✓ NLTK resources present under {download_dir}")
 
 
 if __name__ == "__main__":
@@ -239,7 +308,7 @@ if __name__ == "__main__":
         if is_ort:
             sidecar_url = download_url + ".sha256"
             try:
-                with urllib.request.urlopen(sidecar_url) as resp:
+                with urllib.request.urlopen(sidecar_url, timeout=DOWNLOAD_TIMEOUT_SECONDS) as resp:
                     expected_sha = resp.read().decode().split()[0]
             except Exception as exc:  # noqa: BLE001 - best-effort; fall back to legacy
                 print(f"  WARNING: could not fetch {sidecar_url} ({exc}); skipping checksum for {filename}")
@@ -257,7 +326,7 @@ if __name__ == "__main__":
                 needs_download = False
 
         if needs_download:
-            urllib.request.urlretrieve(download_url, filename)
+            download_file(download_url, filename)
             if expected_sha is not None:
                 actual = _sha256_of(filename)
                 if actual != expected_sha:
@@ -361,11 +430,11 @@ if __name__ == "__main__":
         print(f"  Skipping onnxruntime static check: no .a found under {ort_static_dir}")
 
     local_dir = os.path.abspath("nltk_data")
-    # NLTK >=3.8.2 gates `wordnet` behind `omw-1.4`; both must be provisioned
-    # or tokenization-backed paths raise LookupError at runtime.
-    for data in ["omw-1.4", "wordnet", "punkt", "punkt_tab"]:
+    for data in NLTK_RESOURCE_PATHS:
         print(f"Downloading nltk {data}...")
         nltk.download(data, download_dir=local_dir)
+
+    verify_nltk_data(local_dir)
 
     for repo_id in repos:
         print(f"Downloading huggingface repo {repo_id}...")

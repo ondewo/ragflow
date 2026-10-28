@@ -40,6 +40,36 @@ from api.db.db_models import close_connection
 
 stop_event = threading.Event()
 
+
+def _db_close(exception: BaseException | None) -> None:
+    """
+    Return this request's database connection to the pool.
+
+    Args:
+        exception (BaseException | None): The exception that ended the request, or None if it succeeded.
+    """
+    if exception:
+        logging.error(
+            "Admin request failed: %s",
+            exception,
+            exc_info=(type(exception), exception, exception.__traceback__),
+        )
+    close_connection()
+
+
+def _bind_address() -> tuple[str, int]:
+    """
+    Return the address the admin server listens on.
+
+    The admin server speaks plain HTTP, so it listens on loopback for the nginx in front of it unless the ``admin`` section of the service configuration names another host.
+
+    Returns:
+        tuple[str, int]: ``admin.host`` (default ``127.0.0.1``) and ``admin.http_port`` (default ``9381``).
+    """
+    conf = settings.get_base_config("admin", {}) or {}
+    return conf.get("host", "127.0.0.1"), int(conf.get("http_port", 9381))
+
+
 if __name__ == "__main__":
     faulthandler.enable()
     init_root_logger("admin_service")
@@ -61,28 +91,19 @@ if __name__ == "__main__":
     show_configs()
     login_manager = LoginManager()
     login_manager.init_app(app)
-
-    @app.teardown_request
-    def _db_close(exception):
-        if settings.DATABASE_TYPE.lower() == "gaussdb":
-            if exception:
-                logging.error(
-                    "Admin request failed: %s",
-                    exception,
-                    exc_info=(type(exception), exception, exception.__traceback__),
-                )
-            close_connection()
+    app.teardown_request(_db_close)
 
     settings.init_settings()
     setup_auth(login_manager)
     init_default_admin()
     SERVICE_CONFIGS.configs = load_configurations(SERVICE_CONF)
 
+    host, port = _bind_address()
     try:
         logging.info(f"RAGFlow admin is ready after {time.time() - start_ts}s initialization.")
         run_simple(
-            hostname="0.0.0.0",
-            port=9381,
+            hostname=host,
+            port=port,
             application=app,
             threaded=True,
             use_reloader=False,

@@ -51,13 +51,25 @@ es:
   username: '${ES_USER:-elastic}'
   password: '${ELASTIC_PASSWORD:-infini_rag_flow}'
 os:
-  hosts: 'http://${OS_HOST:-opensearch01}:9201'
+  hosts: 'https://${OS_HOST:-opensearch01}:9201'
   username: '${OS_USER:-admin}'
   password: '${OPENSEARCH_PASSWORD:-infini_rag_flow_OS_01}'
+  # Required: TLS with a verified server name and a client certificate.
+  ca_certs: '/ragflow/certs/ca.pem'
+  client_cert: '/ragflow/certs/cert.pem'
+  client_key: '/ragflow/certs/key.pem'
   # Optional hybrid (BM25 + KNN) search tuning. The connector self-provisions the
   # normalization search pipeline on start-up (requires OpenSearch >= 2.10).
   # hybrid_search_pipeline: 'ragflow_hybrid_pipeline'
   # hybrid_search_weights: [0.5, 0.5]   # [text/BM25 leg, vector/KNN leg]
+  # Optional urllib3 connection-pool size for the OpenSearch client. The
+  # client library default of 10 serialises concurrent upload, parse and
+  # retrieval traffic over ten sockets.
+  # pool_size: 32
+  # Optional replicas of the ragflow_* indices, overridden by the environment variable OS_NUMBER_OF_REPLICAS.
+  # The default '0-1' lets OpenSearch keep the replicas equal to the data nodes, so one node has none and a cluster survives the loss of a node.
+  # A number such as 2 is a fixed replica count, a range such as '0-2' or '0-all' another auto-expand range.
+  # number_of_replicas: '0-1'
 infinity:
   uri: '${INFINITY_HOST:-infinity}:23817'
   postgres_port: 5432
@@ -103,6 +115,10 @@ redis:
   username: '${REDIS_USERNAME:-}'
   password: '${REDIS_PASSWORD:-infini_rag_flow}'
   host: '${REDIS_HOST:-redis}:6379'
+  # Required: TLS with a verified server name and a client certificate.
+  ca_certs: '/ragflow/certs/ca.pem'
+  client_cert: '/ragflow/certs/cert.pem'
+  client_key: '/ragflow/certs/key.pem'
 # Kvrocks is the RocksDB-backed, Redis-protocol store used ONLY by the Go
 # services. It has no in-memory maxmemory cap, so it does not OOM the way
 # Valkey/Redis does. The Go services read this section; the Python services
@@ -146,17 +162,35 @@ user_default_llm:
 #   port: 5432
 #   max_connections: 100
 #   stale_timeout: 30
+#   # The other keys reach libpq unchanged, e.g. TLS with a client certificate:
+#   sslmode: 'verify-full'
+#   sslrootcert: '/ragflow/certs/ca.pem'
+#   sslcert: '/ragflow/certs/cert.pem'
+#   sslkey: '/ragflow/certs/key.pem'
 # GaussDB metadata DB is configured through GAUSSDB_METADATA_* environment
 # variables and is intentionally not rendered into service_conf.yaml.
+# When bucket names one physical bucket shared by every knowledge base, set
+# prefix_path as well. It gives each logical bucket its own key prefix, so an
+# object lands at {prefix_path}/{logical_bucket}/{filename}, and that prefix is
+# what lets remove_bucket scope a dataset teardown to a single logical bucket.
+# Without it the keys of one logical bucket cannot be told apart from the rest,
+# so a shared bucket cannot be torn down at all.
 # s3:
 #   access_key: 'access_key'
 #   secret_key: 'secret_key'
 #   region: 'region'
-#   endpoint_url: 'endpoint_url'
+#   endpoint_url: 'https://endpoint_url'  # https only
+#   ca_certs: '/ragflow/certs/ca.pem'      # required, CA that verifies the endpoint
+#   client_cert: '/ragflow/certs/cert.pem' # required, presented to the endpoint
+#   client_key: '/ragflow/certs/key.pem'   # required
 #   bucket: 'bucket'
 #   prefix_path: 'prefix_path'
 #   signature_version: 'v4'
 #   addressing_style: 'path'
+#   connect_timeout: 10        # seconds to establish a connection
+#   read_timeout: 60           # seconds to read a response
+#   retries_max_attempts: 5    # applied with botocore retry mode 'standard'
+#   pool_size: 32              # pooled connections; botocore's default of 10 serialises concurrent I/O
 # oss:
 #   access_key: '${ACCESS_KEY}'
 #   secret_key: '${SECRET_KEY}'

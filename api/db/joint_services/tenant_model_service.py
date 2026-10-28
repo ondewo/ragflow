@@ -313,6 +313,12 @@ def get_model_config_from_provider_instance(tenant_id, model_type: str | enum.En
             # from model_config["extra"]; see tenant_llm_service.LLMBundle OCR path.
             model_config["extra"] = model_extra
 
+        # Custom HTTP headers are stored per model instance and only added when
+        # configured, so an instance without them keeps the model_config shape
+        # every provider class is constructed from today.
+        if extra_fields.get("default_headers"):
+            model_config["default_headers"] = extra_fields["default_headers"]
+
         if api_key_payload is not None:
             model_config["api_key_payload"] = api_key_payload
 
@@ -365,6 +371,9 @@ def get_model_config_by_id(tenant_id: str, model_type: str | enum.Enum, model_id
     }
     if provider_obj.provider_name.lower() == "somark":
         model_config["extra"] = model_extra
+
+    if extra_fields.get("default_headers"):
+        model_config["default_headers"] = extra_fields["default_headers"]
 
     if api_key_payload is not None:
         model_config["api_key_payload"] = api_key_payload

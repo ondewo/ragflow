@@ -43,6 +43,8 @@ services:
     image: opensearchproject/opensearch:2.19.1
     volumes:
       - osdata01:/usr/share/opensearch/data
+      # Created by generate_dev_certs.sh.
+      - ./certs/opensearch01:/usr/share/opensearch/config/tls:ro
     ports:
       - ${OS_PORT}:9201
     env_file: .env
@@ -53,8 +55,17 @@ services:
       - bootstrap.memory_lock=false
       - discovery.type=single-node
       - plugins.security.disabled=false
-      - plugins.security.ssl.http.enabled=false
+      - plugins.security.allow_default_init_securityindex=true
+      - plugins.security.ssl.http.enabled=true
+      - plugins.security.ssl.http.pemcert_filepath=tls/cert.pem
+      - plugins.security.ssl.http.pemkey_filepath=tls/key.pem
+      - plugins.security.ssl.http.pemtrustedcas_filepath=tls/ca.pem
+      - plugins.security.ssl.http.clientauth_mode=REQUIRE
       - plugins.security.ssl.transport.enabled=true
+      - plugins.security.ssl.transport.pemcert_filepath=tls/cert.pem
+      - plugins.security.ssl.transport.pemkey_filepath=tls/key.pem
+      - plugins.security.ssl.transport.pemtrustedcas_filepath=tls/ca.pem
+      - plugins.security.nodes_dn=CN=opensearch01
       - cluster.routing.allocation.disk.watermark.low=5gb
       - cluster.routing.allocation.disk.watermark.high=3gb
       - cluster.routing.allocation.disk.watermark.flood_stage=2gb
@@ -65,7 +76,7 @@ services:
         soft: -1
         hard: -1
     healthcheck:
-      test: ["CMD-SHELL", "curl http://localhost:9201"]
+      test: ["CMD-SHELL", "curl -s -o /dev/null --cacert config/tls/ca.pem --cert config/tls/cert.pem --key config/tls/key.pem https://localhost:9201"]
       interval: 10s
       timeout: 10s
       retries: 120
@@ -325,17 +336,19 @@ services:
     # services use a separate `kvrocks` service (defined below) so the Python
     # path is left unchanged by the Valkey -> apache/kvrocks migration.
     image: valkey/valkey:8
-    command: ["redis-server", "--requirepass", "${REDIS_PASSWORD}", "--maxmemory", "1gb", "--maxmemory-policy", "volatile-lru"]
+    command: ["redis-server", "--requirepass", "${REDIS_PASSWORD}", "--maxmemory", "1gb", "--maxmemory-policy", "volatile-lru", "--port", "0", "--tls-port", "6379", "--tls-cert-file", "/certs/cert.pem", "--tls-key-file", "/certs/key.pem", "--tls-ca-cert-file", "/certs/ca.pem", "--tls-auth-clients", "yes"]
     env_file: .env
     ports:
       - ${REDIS_PORT}:6379
     volumes:
       - redis_data:/data
+      # Created by generate_dev_certs.sh.
+      - ./certs/redis:/certs:ro
     networks:
       - ragflow
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"]
+      test: ["CMD", "redis-cli", "--tls", "--cacert", "/certs/ca.pem", "--cert", "/certs/cert.pem", "--key", "/certs/key.pem", "-a", "${REDIS_PASSWORD}", "ping"]
       interval: 10s
       timeout: 10s
       retries: 120

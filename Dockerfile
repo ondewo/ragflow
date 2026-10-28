@@ -22,9 +22,22 @@ RUN --mount=type=bind,from=infiniflow/ragflow_deps:latest,source=/huggingface.co
 
 # https://github.com/chrismattmann/tika-python
 # This is the only way to run python-tika without internet access. Without this set, the default is to check the tika version and pull latest every time from Apache.
+#
+# Guard: reject a ragflow_deps image whose NLTK download came out incomplete.
+# api/validation.py re-downloads at startup with halt_on_error=False and
+# quiet=True, so a missing corpus stays invisible until the first document parse
+# fails with a LookupError. nltk.data.find reads a resource either unzipped or
+# as the .zip next to it, so accept both.
 RUN --mount=type=bind,from=infiniflow/ragflow_deps:latest,source=/,target=/deps \
-    cp -r /deps/nltk_data /root/ && \
-    cp /deps/tika-server-standard-3.3.0.jar /deps/tika-server-standard-3.3.0.jar.md5 /ragflow/ && \
+    set -e; \
+    cp -r /deps/nltk_data /root/; \
+    for resource in corpora/omw-1.4 corpora/wordnet tokenizers/punkt tokenizers/punkt_tab; do \
+        if [ ! -d "/root/nltk_data/$resource" ] && [ ! -f "/root/nltk_data/$resource.zip" ]; then \
+            echo "FATAL: NLTK resource $resource missing from infiniflow/ragflow_deps:latest; rebuild the deps image (ragflow_deps/download_deps.py, then ragflow_deps/Dockerfile)." >&2; \
+            exit 1; \
+        fi; \
+    done; \
+    cp /deps/tika-server-standard-3.3.0.jar /deps/tika-server-standard-3.3.0.jar.md5 /ragflow/; \
     cp /deps/cl100k_base.tiktoken /ragflow/9b5ad71b2ce5302211f9c61530b329a4922fc6a4
 
 # Embedding tokenizer assets (internal/tokenizer/embedding_token_limits.md). The Go
@@ -76,6 +89,11 @@ RUN --mount=type=cache,id=ragflow_apt,target=/var/cache/apt,sharing=locked \
     libgtk-4-1 libnss3 xdg-utils libjemalloc-dev gnupg unzip curl wget git vim less \
     ghostscript pandoc lmodern texlive texlive-latex-extra texlive-xetex texlive-lang-chinese \
     fonts-freefont-ttf fonts-noto-cjk postgresql-client
+
+# The build network drops git's HTTP/2 upload-pack streams, so the clone below
+# fails with an RPC error. Pin git to HTTP/1.1 before the first git invocation;
+# the builder and production stages derive from base and inherit this config.
+RUN git config --global http.version HTTP/1.1
 
 # Download resource from GitHub to /usr/share/infinity
 RUN mkdir -p /usr/share/infinity/resource && \
@@ -264,8 +282,17 @@ COPY docs docs
 RUN --mount=type=cache,id=ragflow_npm,target=/root/.npm,sharing=locked \
     cd web && NODE_OPTIONS="--max-old-space-size=8192" VITE_BUILD_SOURCEMAP=false VITE_MINIFY=esbuild npm run build
 
+# The version string baked into /ragflow/VERSION, which the server reports. `git describe` reads it
+# from the repository in the build context, which requires a .git that resolves inside the container.
+# A build from a submodule checkout has a .git that is a gitdir pointer into the superproject and
+# resolves to nothing here, so such a build passes the string in instead.
+ARG RAGFLOW_VERSION=""
 RUN --mount=type=bind,source=.git,target=/ragflow/.git \
-    version_info=$(git describe --tags --match=v* --first-parent --always) && \
+    set -e; \
+    version_info="${RAGFLOW_VERSION}"; \
+    if [ -z "$version_info" ]; then \
+        version_info=$(git describe --tags --match=v* --first-parent --always); \
+    fi; \
     echo "$version_info" > /ragflow/VERSION
 
 # production stage

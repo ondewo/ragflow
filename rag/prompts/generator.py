@@ -173,7 +173,8 @@ def kb_prompt(kbinfos, max_tokens, hash_id=False):
         # Budget the COMPLETE block: the title / url / metadata decoration was
         # previously invisible to the budget, so the rendered prompt could exceed
         # the max_tokens it claims to enforce.
-        block = _kb_block(ck, len(out) + 1, hash_id)
+        # 0-based: decorate_answer and every client resolve [ID:n] as the index into kbinfos["chunks"].
+        block = _kb_block(ck, len(out), hash_id)
         if block is None:
             continue
         block_tokens = num_tokens_from_string(block)

@@ -280,12 +280,16 @@ class TestChatAssistantUpdate:
         assert listed["data"]["icon"] == "raw-avatar-value"
 
     @pytest.mark.p2
-    def test_update_unparsed_dataset_guard_p2(self, HttpApiAuth, add_dataset_func, clear_chat_assistants):
+    def test_update_unparsed_dataset_is_accepted_p2(self, HttpApiAuth, add_dataset_func, clear_chat_assistants):
         dataset_id = add_dataset_func
         create_res = create_chat_assistant(HttpApiAuth, {"name": "update-unparsed-target", "dataset_ids": []})
         assert create_res["code"] == 0
 
         chat_id = create_res["data"]["id"]
         res = patch_chat_assistant(HttpApiAuth, chat_id, {"dataset_ids": [dataset_id]})
-        assert res["code"] == 102
-        assert "doesn't own parsed file" in res["message"]
+        assert res["code"] == 0, res
+        assert res["data"]["dataset_ids"] == [dataset_id], res
+
+        listed = get_chat_assistant(HttpApiAuth, chat_id)
+        assert listed["code"] == 0, listed
+        assert listed["data"]["dataset_ids"] == [dataset_id], listed

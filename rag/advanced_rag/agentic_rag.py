@@ -228,7 +228,7 @@ def _repair_slot_citation_markers(answer, slot_evidence, cite_chunk_ids):
     RepairSlotCitations): the model occasionally cites slot-table rows —
     internal markers that cannot be located in the source document. Each
     marker is rewritten to the [ID:k] of the slot's first evidence chunk that
-    is present in the citation pool (1-based kb_prompt numbering); slots
+    is present in the citation pool (0-based kb_prompt numbering); slots
     without pool-resident evidence have the marker removed — an internal
     marker must not reach the answer.
     """
@@ -237,7 +237,7 @@ def _repair_slot_citation_markers(answer, slot_evidence, cite_chunk_ids):
     pos_by_id = {}
     for i, cid in enumerate(cite_chunk_ids):
         if cid and cid not in pos_by_id:
-            pos_by_id[cid] = i + 1
+            pos_by_id[cid] = i
 
     def _repl(m):
         meta = slot_evidence.get(m.group(1)) or {}
@@ -254,9 +254,9 @@ def _expand_range_citation_markers(answer, pool_size):
     """Expand range-merged citations back into individual ones.
 
     DESIGN ENHANCEMENT (Go parity: ExpandRangeCitations): models sometimes
-    compress consecutive [ID:1][ID:2][ID:3] into [ID:1-3]; a range cannot be
+    compress consecutive [ID:0][ID:1][ID:2] into [ID:0-2]; a range cannot be
     resolved to a single source, so it is expanded when both bounds are valid
-    1-based citation-pool positions and dropped otherwise.
+    0-based citation-pool positions and dropped otherwise.
     """
     if not answer or pool_size <= 0:
         return answer
@@ -265,7 +265,7 @@ def _expand_range_citation_markers(answer, pool_size):
         a, b = int(m.group(1)), int(m.group(2))
         if a > b:
             a, b = b, a
-        if a < 1 or b > pool_size:
+        if a < 0 or b >= pool_size:
             return ""  # out of range: unresolvable, drop
         return "".join(f"[ID:{i}]" for i in range(a, b + 1))
 

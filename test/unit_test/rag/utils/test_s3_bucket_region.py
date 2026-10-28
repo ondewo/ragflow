@@ -23,14 +23,17 @@ from botocore.response import StreamingBody
 from botocore.stub import ANY, Stubber
 
 import common.settings  # noqa: F401 -- initialize the settings/connector import cycle.
-from rag.utils import s3_conn
 
 pytestmark = pytest.mark.p2
+
+# Readable stand-ins for the certificate files: no test opens a connection, so they are never loaded.
+TLS_FILES = {"ca_certs": __file__, "client_cert": __file__, "client_key": __file__}
 
 
 def make_storage(monkeypatch, tmp_path, config):
     """Create a fresh S3 singleton with isolated AWS configuration per test."""
-    module = importlib.reload(s3_conn)
+    # Re-import before reloading: an earlier test may have dropped "rag.utils.s3_conn" from sys.modules (see test_s3_conn_hardening.py).
+    module = importlib.reload(importlib.import_module("rag.utils.s3_conn"))
     # Explicit test credentials and empty config files keep the SDK independent
     # of the developer's AWS profiles. Stubber rejects any unexpected request.
     monkeypatch.setenv("AWS_CONFIG_FILE", str(tmp_path / "aws-config"))
@@ -39,13 +42,12 @@ def make_storage(monkeypatch, tmp_path, config):
     monkeypatch.setattr(
         module.settings,
         "S3",
-        {"access_key": "test-access", "secret_key": "test-secret", "endpoint_url": "https://s3.test", **config},
+        {"access_key": "test-access", "secret_key": "test-secret", "endpoint_url": "https://s3.test", **TLS_FILES, **config},
     )
     storage = module.RAGFlowS3()
-    # A failed base request must not reconnect or wait before we inspect the
-    # stub queue. The successful write path still uses the real SDK uploader.
+    # A failed base request must not reconnect before we inspect the stub
+    # queue. The successful write path still uses the real SDK uploader.
     monkeypatch.setattr(storage, "__open__", Mock())
-    monkeypatch.setattr(module.time, "sleep", Mock())
     return storage
 
 

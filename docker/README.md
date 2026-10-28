@@ -20,6 +20,8 @@
 > [!CAUTION]
 > We do not actively maintain **docker-compose-CN-oc9.yml**, **docker-compose-macos.yml**, so use them at your own risk. However, you are welcome to file a pull request to improve any of them.
 
+RAGFlow connects to Redis, OpenSearch and S3 only over TLS: it verifies the server's certificate and name and presents a client certificate. Before the first `docker compose up`, run `sh generate_dev_certs.sh` in this directory. It writes a development CA and, for each of `ragflow`, `redis` and `opensearch01`, a `certs/<name>/` directory with `ca.pem`, `cert.pem` and `key.pem`, which the compose files mount into the RAGFlow, Redis and OpenSearch containers. The certificates are for local development only.
+
 ## 🐬 Docker environment variables
 
 The [.env](./.env) file contains important environment variables for Docker.
@@ -136,6 +138,11 @@ the `ragflow_deps/download_deps.py` snapshot.
 - `EMBEDDING_BATCH_SIZE`
   The number of text chunks processed in a single batch during embedding vectorization. Defaults to `16`.
 
+### OpenSearch replicas
+
+- `OS_NUMBER_OF_REPLICAS`
+  The replicas of RAGFlow's OpenSearch indices (`ragflow_<tenant>` and `ragflow_doc_meta_<tenant>`), set when RAGFlow creates an index and, if they differ, on the existing indices at every start. Unset, OpenSearch keeps the replicas equal to the data nodes, from 0 to 1 (`auto_expand_replicas` `0-1`): a single node has none and stays green, a cluster of two or more data nodes has one and survives the loss of a node. A number such as `2` fixes the replica count, a range such as `0-2` or `0-all` sets another auto-expand range. The `os.number_of_replicas` key of `service_conf.yaml` takes the same values; the variable wins. Any other value stops RAGFlow at start. Only `DOC_ENGINE=opensearch` is affected.
+
 ### OceanBase prerequisites
 
 Before setting `DOC_ENGINE=oceanbase`, make sure the host OS allows the file descriptor and core dump limits OceanBase expects.
@@ -184,6 +191,10 @@ Before setting `DOC_ENGINE=oceanbase`, make sure the host OS allows the file des
   - `host`: The API server's IP address inside the Docker container. Defaults to `0.0.0.0`.
   - `http_port`: The API server's serving port inside the Docker container. Defaults to `9380`.
 
+- `admin`
+  - `host`: The admin server's IP address inside the Docker container. Without the key, the admin server listens on `127.0.0.1`, reachable only through the nginx of the same container.
+  - `http_port`: The admin server's serving port inside the Docker container. Defaults to `9381`.
+
 - `mysql`
   - `name`: The MySQL database name. Defaults to `rag_flow`.
   - `user`: The username for MySQL.
@@ -226,12 +237,37 @@ Before setting `DOC_ENGINE=oceanbase`, make sure the host OS allows the file des
 - `s3`:
   - `access_key`: The access key ID used to authenticate requests to the S3 service.
   - `secret_key`: The secret access key used to authenticate requests to the S3 service.
-  - `endpoint_url`: The URL of the S3-compatible service endpoint. This is necessary when using an S3-compatible protocol instead of the default AWS S3 endpoint.
+  - `endpoint_url`: The URL of the S3-compatible service endpoint. This is necessary when using an S3-compatible protocol instead of the default AWS S3 endpoint. It must start with `https://`.
+  - `ca_certs`, `client_cert`, `client_key`: Required. See [TLS client certificates](#tls-client-certificates).
   - `bucket`: The name of the S3 bucket where files will be stored. When you want to store all files in a specified bucket, you need this configuration item.
   - `region`: The AWS region where the S3 bucket is located. This is important for directing requests to the correct data center.
   - `signature_version`: Optional. The version of the signature to use for authenticating requests. Common versions include `v4`.
   - `addressing_style`: Optional. The style of addressing to use for the S3 endpoint. This can be `path` or `virtual`.
   - `prefix_path`: Optional. A prefix path to prepend to file names in the S3 bucket, which can help organize files within the bucket.
+
+- `os`
+  - `hosts`: Comma-separated URLs of the OpenSearch nodes. Each must start with `https://`.
+  - `username`, `password`: The OpenSearch user.
+  - `ca_certs`, `client_cert`, `client_key`: Required. See [TLS client certificates](#tls-client-certificates).
+  - `number_of_replicas`: Optional. The replicas of RAGFlow's indices; see `OS_NUMBER_OF_REPLICAS` under [OpenSearch replicas](#opensearch-replicas).
+
+- `redis`
+  - `host`: The Redis serving IP *and* port inside the Docker container. Defaults to `redis:6379`.
+  - `db`, `username`, `password`: The Redis database index and user.
+  - `ca_certs`, `client_cert`, `client_key`: Required. See [TLS client certificates](#tls-client-certificates).
+
+- `postgres`
+  The keys besides `name` and the pool settings `max_connections` and `stale_timeout` reach libpq unchanged, so `sslmode: verify-full`, `sslrootcert`, `sslcert` and `sslkey` give the database connection TLS with a client certificate.
+
+### TLS client certificates
+
+The connections to OpenSearch (`os`), Redis (`redis`) and S3 (`s3`) are always TLS. Each of these sections requires three paths:
+
+- `ca_certs`: The PEM file of the CA certificates that verify the server's certificate. The server's certificate must also name the host given in the section.
+- `client_cert`: The PEM file of the client certificate RAGFlow presents to the server.
+- `client_key`: The PEM file of that certificate's private key.
+
+A missing key or a file that cannot be read stops RAGFlow at start with an error naming the key, for example `redis.client_key is not set`. A `http://` URL in `os.hosts` or `s3.endpoint_url` stops it the same way. The template points all three sections at `/ragflow/certs/ca.pem`, `/ragflow/certs/cert.pem` and `/ragflow/certs/key.pem`.
 
 - `oauth`
   The OAuth configuration for signing up or signing in to RAGFlow using a third-party account.

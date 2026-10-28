@@ -173,3 +173,13 @@ def test_the_knowledgebase_argument_is_authoritative(os_conn):
     conn, seen = os_conn
     conn.update({"exists": "pagerank_fea", "kb_id": "kb-B"}, {"remove": "pagerank_fea"}, "ragflow_tenant1", "kb-A")
     assert _kb_filters(seen) == [{"term": {"kb_id": "kb-A"}}]
+
+
+def test_update_excludes_documents_matching_a_must_not_exists_condition(os_conn):
+    # document_api_service.py toggles a document's chunks with
+    # {"doc_id": ..., "must_not": {"exists": "compile_kwd"}}; the clause is honoured as in ESConnection.update.
+    conn, seen = os_conn
+    assert conn.update({"doc_id": "doc-1", "must_not": {"exists": "compile_kwd"}}, {"available_int": 0}, "ragflow_tenant1", "kb-A")
+    query = seen["query"].to_dict()["bool"]
+    assert query["must_not"] == [{"exists": {"field": "compile_kwd"}}]
+    assert {"term": {"doc_id": "doc-1"}} in query["filter"]

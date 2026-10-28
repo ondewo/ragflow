@@ -119,6 +119,38 @@ def get_base_config(key, default=None):
     return CONFIGS.get(key, default)
 
 
+TLS_CLIENT_FILE_KEYS = ("ca_certs", "client_cert", "client_key")
+
+
+def tls_client_files(section, config):
+    """Return the CA bundle, client certificate and client key of a service_conf.yaml section.
+
+    Connections to OpenSearch, Redis and S3 always verify the server against ``ca_certs`` and present ``client_cert``/``client_key``, so a missing or unreadable file stops the service instead of degrading the connection.
+
+    Args:
+        section: Name of the section (``os``, ``redis``, ``s3``), used in the error.
+        config: The section's settings.
+
+    Returns:
+        The paths of ``ca_certs``, ``client_cert`` and ``client_key``, in that order.
+
+    Raises:
+        ValueError: A key is unset or names a file that cannot be read.
+    """
+    paths = []
+    for key in TLS_CLIENT_FILE_KEYS:
+        path = (config or {}).get(key)
+        if not path:
+            raise ValueError(f"{section}.{key} is not set in {SERVICE_CONF}: TLS to {section} needs {', '.join(TLS_CLIENT_FILE_KEYS)}")
+        try:
+            with open(path, "rb"):
+                pass
+        except OSError as e:
+            raise ValueError(f"{section}.{key} in {SERVICE_CONF} names {path!r}, which cannot be read: {e.strerror}") from e
+        paths.append(path)
+    return tuple(paths)
+
+
 def decrypt_database_password(password):
     encrypt_password = get_base_config("encrypt_password", False)
     encrypt_module = get_base_config("encrypt_module", False)
