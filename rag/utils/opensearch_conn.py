@@ -530,7 +530,6 @@ class OSConnection(DocStoreConnection):
                 raise Exception(f"Condition `{str(k)}={str(v)}` value type is {str(type(v))}, expected to be int, str or list.")
 
         s = Search()
-        vector_similarity_weight = 0.5
         for m in match_expressions:
             if isinstance(m, FusionExpr) and m.method == "weighted_sum" and "weights" in m.fusion_params:
                 assert (
@@ -539,8 +538,6 @@ class OSConnection(DocStoreConnection):
                     and isinstance(match_expressions[1], MatchDenseExpr)
                     and isinstance(match_expressions[2], FusionExpr)
                 )
-                weights = m.fusion_params["weights"]
-                vector_similarity_weight = float(weights.split(",")[1])
         knn_query = {}
         for m in match_expressions:
             if isinstance(m, MatchTextExpr):
@@ -548,8 +545,9 @@ class OSConnection(DocStoreConnection):
                 minimum_should_match = m.extra_options.get("minimum_should_match", 0.0)
                 if isinstance(minimum_should_match, float):
                     minimum_should_match = format_minimum_should_match_percent(minimum_should_match)
+                # No boost from the fusion weights: the hybrid search pipeline normalizes each leg and weighs them with
+                # hybrid_search_weights, so a boost cannot shift the balance, and a vector-only fusion ("0.001,1") would zero this leg.
                 bqry.must.append(Q("query_string", fields=m.fields, type="best_fields", query=m.matching_text, minimum_should_match=minimum_should_match, boost=1))
-                bqry.boost = 1.0 - vector_similarity_weight
 
             # Elasticsearch has the encapsulation of KNN_search in python sdk
             # while the Python SDK for OpenSearch does not provide encapsulation for KNN_search,

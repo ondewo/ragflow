@@ -197,6 +197,17 @@ class TestHybridSearchDSL:
         assert "hybrid" not in body.get("query", {}), "text-only must not use hybrid"
         assert params is None, "text-only must not pass a search_pipeline"
 
+    @pytest.mark.parametrize("weights", ["0.001,1", "0.3,0.7", "0.5,0.5"])
+    def test_keyword_leg_keeps_its_scores_whatever_the_fusion_weights(self, weights):
+        """The pipeline weighs the two legs; a boost derived from the fusion weights would only zero
+        the keyword leg under the vector-only fusion Dealer.search sends for OpenSearch."""
+        conn = _make_os_connection()
+        fusion = FusionExpr(method="weighted_sum", topn=5, fusion_params={"weights": weights})
+        body, _ = _call_search(conn, [_text_expr(), _dense_expr(), fusion])
+
+        keyword_q = body["query"]["hybrid"]["queries"][0]
+        assert keyword_q["bool"].get("boost", 1.0) == 1.0, "the keyword leg must not be re-weighted by the fusion weights"
+
     def test_knn_filter_excludes_text_must_clause(self):
         """The KNN pre-filter must carry only filter conditions, never the
         text query_string must-clause (the root cause of #10747)."""
